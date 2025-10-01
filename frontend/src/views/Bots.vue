@@ -30,12 +30,22 @@
             </div>
             <p class="text-sm text-gray-600 line-clamp-3">{{ bot.instructions }}</p>
           </div>
-          <button
-            @click.stop="deleteBotHandler(bot.id)"
-            class="text-red-500 hover:text-red-700 text-xl"
-          >
-            🗑️
-          </button>
+          <div class="flex gap-2">
+            <button
+              @click.stop="editBotHandler(bot)"
+              class="text-blue-500 hover:text-blue-700 text-xl"
+              title="Edit bot"
+            >
+              ✏️
+            </button>
+            <button
+              @click.stop="deleteBotHandler(bot.id)"
+              class="text-red-500 hover:text-red-700 text-xl"
+              title="Delete bot"
+            >
+              🗑️
+            </button>
+          </div>
         </div>
 
         <div class="space-y-2 text-sm">
@@ -163,19 +173,107 @@
         </div>
       </div>
     </div>
+
+    <!-- Edit Bot Modal -->
+    <div
+      v-if="showEditModal && editingBot"
+      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+      @click.self="showEditModal = false"
+    >
+      <div class="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-2xl">
+        <h2 class="text-2xl font-bold text-gray-800 mb-6">Edit Bot</h2>
+        
+        <div class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Bot Name</label>
+            <input
+              v-model="editingBot.name"
+              type="text"
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-chorus-green-500 focus:border-transparent"
+              placeholder="Customer Support Bot"
+            />
+          </div>
+          
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Instructions</label>
+            <textarea
+              v-model="editingBot.instructions"
+              rows="6"
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-chorus-green-500 focus:border-transparent"
+              placeholder="You are a helpful customer support agent..."
+            ></textarea>
+          </div>
+
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Dataset (Optional)</label>
+            <select
+              v-model="editingBot.dataset_id"
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-chorus-green-500 focus:border-transparent"
+            >
+              <option :value="null">No dataset</option>
+              <option v-for="dataset in datasets" :key="dataset.id" :value="dataset.id">
+                {{ dataset.name }}
+              </option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Chorus Model *</label>
+            <select
+              v-model="editingBot.chorus_model_id"
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-chorus-green-500 focus:border-transparent"
+            >
+              <option :value="null" disabled>Select a Chorus model</option>
+              <option v-for="model in chorusModels" :key="model.id" :value="model.id">
+                {{ model.name }}
+              </option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">RAG Results Count</label>
+            <input
+              v-model.number="editingBot.rag_results_count"
+              type="number"
+              min="1"
+              max="100"
+              class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-chorus-green-500 focus:border-transparent"
+            />
+            <p class="text-xs text-gray-500 mt-1">Number of relevant chunks to retrieve from dataset (1-100)</p>
+          </div>
+        </div>
+
+        <div class="flex gap-3 mt-6">
+          <button
+            @click="showEditModal = false"
+            class="flex-1 px-6 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 font-medium"
+          >
+            Cancel
+          </button>
+          <button
+            @click="updateBotHandler"
+            class="flex-1 px-6 py-3 bg-chorus-green-600 text-white rounded-lg hover:bg-chorus-green-700 font-medium"
+          >
+            Update
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { getBots, createBot, deleteBot, getDatasets, getChorusModels } from '../api'
+import { getBots, createBot, updateBot, deleteBot, getDatasets, getChorusModels } from '../api'
 
 const router = useRouter()
 const bots = ref([])
 const datasets = ref([])
 const chorusModels = ref([])
 const showCreateModal = ref(false)
+const showEditModal = ref(false)
+const editingBot = ref(null)
 const newBot = ref({
   name: '',
   instructions: '',
@@ -242,6 +340,38 @@ const createBotHandler = async () => {
   } catch (error) {
     console.error('Failed to create bot:', error)
     alert('Failed to create bot')
+  }
+}
+
+const editBotHandler = (bot) => {
+  editingBot.value = { ...bot }
+  showEditModal.value = true
+}
+
+const updateBotHandler = async () => {
+  if (!editingBot.value.name) {
+    alert('Please enter a bot name')
+    return
+  }
+
+  if (!editingBot.value.instructions) {
+    alert('Please enter bot instructions')
+    return
+  }
+
+  if (!editingBot.value.chorus_model_id) {
+    alert('Please select a Chorus model')
+    return
+  }
+
+  try {
+    await updateBot(editingBot.value.id, editingBot.value)
+    showEditModal.value = false
+    editingBot.value = null
+    loadBots()
+  } catch (error) {
+    console.error('Failed to update bot:', error)
+    alert('Failed to update bot: ' + (error.response?.data?.error || error.message))
   }
 }
 

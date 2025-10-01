@@ -548,6 +548,50 @@ def create_chorus_model():
         print(f"Error creating chorus model: {e}")
         return jsonify({'error': f'Failed to create chorus model: {str(e)}'}), 500
 
+@app.route('/api/chorus-models/<int:model_id>', methods=['PUT'])
+def update_chorus_model(model_id):
+    """Update an existing Chorus model"""
+    try:
+        data = request.json
+        db = get_db()
+        
+        model = db.query(ChorusModel).filter_by(id=model_id).first()
+        if not model:
+            return jsonify({'error': 'Chorus model not found'}), 404
+        
+        # Update fields if provided
+        if 'name' in data:
+            # Check if new name conflicts with another model
+            if data['name'] != model.name:
+                existing = db.query(ChorusModel).filter_by(name=data['name']).first()
+                if existing:
+                    return jsonify({'error': f'Chorus model with name "{data["name"]}" already exists'}), 409
+            model.name = data['name']
+        
+        if 'description' in data:
+            model.description = data['description']
+        
+        if 'responder_llms' in data:
+            model.responder_llms = data['responder_llms']
+        
+        if 'evaluator_llms' in data:
+            model.evaluator_llms = data['evaluator_llms']
+        
+        db.commit()
+        
+        return jsonify({
+            'id': model.id,
+            'name': model.name,
+            'description': model.description,
+            'responder_llms': model.responder_llms,
+            'evaluator_llms': model.evaluator_llms,
+            'created_at': model.created_at.isoformat()
+        })
+    except Exception as e:
+        db.rollback()
+        print(f"Error updating chorus model: {e}")
+        return jsonify({'error': f'Failed to update chorus model: {str(e)}'}), 500
+
 @app.route('/api/chorus-models/<int:model_id>', methods=['DELETE'])
 def delete_chorus_model(model_id):
     """Delete a Chorus model"""
@@ -621,6 +665,54 @@ def create_bot():
         db.rollback()
         print(f"Error creating bot: {e}")
         return jsonify({'error': f'Failed to create bot: {str(e)}'}), 500
+
+@app.route('/api/bots/<int:bot_id>', methods=['PUT'])
+def update_bot(bot_id):
+    """Update an existing bot"""
+    try:
+        data = request.json
+        db = get_db()
+        
+        bot = db.query(Bot).filter_by(id=bot_id).first()
+        if not bot:
+            return jsonify({'error': 'Bot not found'}), 404
+        
+        # Update fields if provided
+        if 'name' in data:
+            # Check if new name conflicts with another bot
+            if data['name'] != bot.name:
+                existing = db.query(Bot).filter_by(name=data['name']).first()
+                if existing:
+                    return jsonify({'error': f'Bot with name "{data["name"]}" already exists'}), 409
+            bot.name = data['name']
+        
+        if 'instructions' in data:
+            bot.instructions = data['instructions']
+        
+        if 'dataset_id' in data:
+            bot.dataset_id = data['dataset_id']
+        
+        if 'chorus_model_id' in data:
+            bot.chorus_model_id = data['chorus_model_id']
+        
+        if 'rag_results_count' in data:
+            bot.rag_results_count = data['rag_results_count']
+        
+        db.commit()
+        
+        return jsonify({
+            'id': bot.id,
+            'name': bot.name,
+            'instructions': bot.instructions,
+            'dataset_id': bot.dataset_id,
+            'chorus_model_id': bot.chorus_model_id,
+            'rag_results_count': bot.rag_results_count,
+            'created_at': bot.created_at.isoformat()
+        })
+    except Exception as e:
+        db.rollback()
+        print(f"Error updating bot: {e}")
+        return jsonify({'error': f'Failed to update bot: {str(e)}'}), 500
 
 @app.route('/api/bots/<int:bot_id>', methods=['DELETE'])
 def delete_bot(bot_id):

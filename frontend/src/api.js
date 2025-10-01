@@ -68,11 +68,13 @@ export const deleteFile = (datasetId, fileId) => api.delete(`/datasets/${dataset
 // Chorus Models
 export const getChorusModels = () => api.get('/chorus-models')
 export const createChorusModel = (data) => api.post('/chorus-models', data)
+export const updateChorusModel = (modelId, data) => api.put(`/chorus-models/${modelId}`, data)
 export const deleteChorusModel = (modelId) => api.delete(`/chorus-models/${modelId}`)
 
 // Bots
 export const getBots = () => api.get('/bots')
 export const createBot = (data) => api.post('/bots', data)
+export const updateBot = (botId, data) => api.put(`/bots/${botId}`, data)
 export const deleteBot = (botId) => api.delete(`/bots/${botId}`)
 export const chatWithBot = (botId, message, ragCount = null, imageSettings = null) => {
   const payload = { message }

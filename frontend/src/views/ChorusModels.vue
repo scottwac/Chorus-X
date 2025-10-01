@@ -26,12 +26,22 @@
             <h3 class="text-xl font-bold text-gray-800">{{ model.name }}</h3>
             <p class="text-sm text-gray-600 mt-1">{{ model.description || 'No description' }}</p>
           </div>
-          <button
-            @click="deleteChorusModelHandler(model.id)"
-            class="text-red-500 hover:text-red-700 text-xl"
-          >
-            🗑️
-          </button>
+          <div class="flex gap-2">
+            <button
+              @click="editChorusModelHandler(model)"
+              class="text-blue-500 hover:text-blue-700 text-xl"
+              title="Edit model"
+            >
+              ✏️
+            </button>
+            <button
+              @click="deleteChorusModelHandler(model.id)"
+              class="text-red-500 hover:text-red-700 text-xl"
+              title="Delete model"
+            >
+              🗑️
+            </button>
+          </div>
         </div>
 
         <!-- Responders -->
@@ -208,15 +218,83 @@
         </div>
       </div>
     </div>
+
+    <!-- Edit Chorus Model Modal - Same structure as Create but with editingModel -->
+    <div
+      v-if="showEditModal && editingModel"
+      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+      @click.self="showEditModal = false"
+    >
+      <div class="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-3xl my-8 max-h-[90vh] overflow-y-auto">
+        <h2 class="text-2xl font-bold text-gray-800 mb-6">Edit Chorus Model</h2>
+        
+        <div class="space-y-6">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Model Name</label>
+            <input v-model="editingModel.name" type="text" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-chorus-green-500 focus:border-transparent" placeholder="Balanced Responder" />
+          </div>
+          
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Description (Optional)</label>
+            <textarea v-model="editingModel.description" rows="2" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-chorus-green-500 focus:border-transparent" placeholder="Describe this model..."></textarea>
+          </div>
+
+          <!-- Responder LLMs -->
+          <div>
+            <div class="flex items-center justify-between mb-3">
+              <label class="text-sm font-medium text-gray-700">🎤 Responder LLMs (Generate responses)</label>
+              <button @click="addResponderToEdit" class="px-3 py-1 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 text-sm">+ Add Responder</button>
+            </div>
+            <div v-for="(llm, index) in editingModel.responder_llms" :key="index" class="flex gap-3 mb-3">
+              <select v-model="llm.provider" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-chorus-green-500 focus:border-transparent">
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="groq">Groq</option>
+              </select>
+              <select v-model="llm.model" class="flex-[2] px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-chorus-green-500 focus:border-transparent">
+                <option v-for="model in getModelsForProvider(llm.provider)" :key="model" :value="model">{{ model }}</option>
+              </select>
+              <button @click="removeResponderFromEdit(index)" class="px-3 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200">🗑️</button>
+            </div>
+          </div>
+
+          <!-- Evaluator LLMs -->
+          <div>
+            <div class="flex items-center justify-between mb-3">
+              <label class="text-sm font-medium text-gray-700">⚖️ Evaluator LLMs (Vote on best response)</label>
+              <button @click="addEvaluatorToEdit" class="px-3 py-1 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 text-sm">+ Add Evaluator</button>
+            </div>
+            <div v-for="(llm, index) in editingModel.evaluator_llms" :key="index" class="flex gap-3 mb-3">
+              <select v-model="llm.provider" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-chorus-green-500 focus:border-transparent">
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="groq">Groq</option>
+              </select>
+              <select v-model="llm.model" class="flex-[2] px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-chorus-green-500 focus:border-transparent">
+                <option v-for="model in getModelsForProvider(llm.provider)" :key="model" :value="model">{{ model }}</option>
+              </select>
+              <button @click="removeEvaluatorFromEdit(index)" class="px-3 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200">🗑️</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex gap-3 mt-6">
+          <button @click="showEditModal = false" class="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300">Cancel</button>
+          <button @click="updateChorusModelHandler" class="flex-1 px-4 py-2 bg-chorus-green-600 text-white rounded-lg hover:bg-chorus-green-700">Update</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { getChorusModels, createChorusModel, deleteChorusModel } from '../api'
+import { getChorusModels, createChorusModel, updateChorusModel, deleteChorusModel } from '../api'
 
 const chorusModels = ref([])
 const showCreateModal = ref(false)
+const showEditModal = ref(false)
+const editingModel = ref(null)
 const newModel = ref({
   name: '',
   description: '',
@@ -229,24 +307,14 @@ const modelsByProvider = {
     'gpt-5-2025-08-07',
     'gpt-5-nano',
     'gpt-5-nano-2025-08-07',
-    'gpt-4o',
-    'gpt-4o-mini',
-    'gpt-4-turbo',
-    'gpt-4',
-    'gpt-3.5-turbo'
   ],
   anthropic: [
-    'claude-3-7-sonnet-20250219',
-    'claude-3-5-sonnet-20241022',
-    'claude-3-5-sonnet-20240620',
-    'claude-3-5-haiku-20241022',
-    'claude-3-opus-20240229',
-    'claude-3-sonnet-20240229',
-    'claude-3-haiku-20240307'
+    'claude-sonnet-4-5-20250929',
+    'claude-sonnet-4-20250514'
+    
   ],
   groq: [
     'llama-3.3-70b-versatile',
-    'llama-3.1-70b-versatile',
     'llama-3.1-8b-instant',
     'mixtral-8x7b-32768',
     'gemma2-9b-it'
@@ -299,6 +367,38 @@ const createChorusModelHandler = async () => {
   }
 }
 
+const editChorusModelHandler = (model) => {
+  editingModel.value = JSON.parse(JSON.stringify(model)) // Deep copy
+  showEditModal.value = true
+}
+
+const updateChorusModelHandler = async () => {
+  if (!editingModel.value.name) {
+    alert('Please enter a model name')
+    return
+  }
+
+  if (editingModel.value.responder_llms.length === 0) {
+    alert('Please add at least one responder LLM')
+    return
+  }
+
+  if (editingModel.value.evaluator_llms.length === 0 && editingModel.value.responder_llms.length > 1) {
+    alert('Please add at least one evaluator LLM when using multiple responders')
+    return
+  }
+
+  try {
+    await updateChorusModel(editingModel.value.id, editingModel.value)
+    showEditModal.value = false
+    editingModel.value = null
+    loadChorusModels()
+  } catch (error) {
+    console.error('Failed to update Chorus model:', error)
+    alert('Failed to update Chorus model: ' + (error.response?.data?.error || error.message))
+  }
+}
+
 const deleteChorusModelHandler = async (modelId) => {
   if (!confirm('Are you sure you want to delete this Chorus model?')) return
 
@@ -317,6 +417,22 @@ const addResponder = () => {
 
 const addEvaluator = () => {
   newModel.value.evaluator_llms.push({ provider: 'anthropic', model: 'claude-3-7-sonnet-20250219' })
+}
+
+const addResponderToEdit = () => {
+  editingModel.value.responder_llms.push({ provider: 'openai', model: 'gpt-5-2025-08-07' })
+}
+
+const addEvaluatorToEdit = () => {
+  editingModel.value.evaluator_llms.push({ provider: 'anthropic', model: 'claude-3-7-sonnet-20250219' })
+}
+
+const removeResponderFromEdit = (index) => {
+  editingModel.value.responder_llms.splice(index, 1)
+}
+
+const removeEvaluatorFromEdit = (index) => {
+  editingModel.value.evaluator_llms.splice(index, 1)
 }
 
 onMounted(() => {
