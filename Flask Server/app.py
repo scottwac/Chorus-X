@@ -165,7 +165,6 @@ def upload_files(dataset_id):
                     if file_extension == '.zip':
                         # Handle ZIP file extraction
                         import zipfile
-                        import tempfile
                         
                         # Save ZIP to temp location
                         temp_zip_path = os.path.join(dataset_folder, f"temp_{uuid.uuid4().hex}.zip")
@@ -173,122 +172,145 @@ def upload_files(dataset_id):
                         
                         try:
                             # Extract ZIP file
+                            print(f"Extracting ZIP file '{filename}'")
+                            yield send_progress('status', {'message': f'Extracting {filename}...', 'total': total_files, 'processed': processed_count})
+                            
                             with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
                                 # Get list of files in ZIP
                                 zip_files = [f for f in zip_ref.namelist() if not f.endswith('/') and not f.startswith('__MACOSX')]
-                                
-                                print(f"Extracting ZIP file '{filename}' with {len(zip_files)} files")
-                                yield send_progress('status', {'message': f'Extracting {filename} ({len(zip_files)} files)...', 'total': total_files, 'processed': processed_count})
                                 
                                 # Create temp extraction folder
                                 extract_folder = os.path.join(dataset_folder, f"temp_extract_{uuid.uuid4().hex}")
                                 os.makedirs(extract_folder, exist_ok=True)
                                 
-                                # Extract files
+                                # Extract all files
                                 zip_ref.extractall(extract_folder)
                                 
-                                # Process each extracted file
-                                for i, zip_file_name in enumerate(zip_files):
-                                    processed_count += 1
-                                    original_filename = os.path.basename(zip_file_name)
-                                    print(f"Processing file {processed_count}/{total_files}: {zip_file_name}")
-                                    yield send_progress('status', {'message': f'Processing {original_filename}...', 'total': total_files, 'processed': processed_count, 'filename': original_filename})
+                                print(f"Extracted {len(zip_files)} files from ZIP")
                                 
-                                try:
-                                    extracted_path = os.path.join(extract_folder, zip_file_name)
+                                # Process each extracted file one by one
+                                for zip_file_name in zip_files:
+                                    processed_count += 1
                                     
-                                    if not os.path.isfile(extracted_path):
-                                        continue
-                                    
-                                    # Get just the filename (remove directory path)
-                                    original_filename = os.path.basename(zip_file_name)
-                                    original_filename = secure_filename(original_filename)
-                                    
-                                    # Move to dataset folder with unique name
-                                    stored_filename = f"{uuid.uuid4().hex}_{original_filename}"
-                                    final_path = os.path.join(dataset_folder, stored_filename)
-                                    shutil.move(extracted_path, final_path)
-                                    
-                                    file_size = os.path.getsize(final_path)
-                                    
-                                    # Process file
-                                    documents = file_processor.process_file(final_path, original_filename)
-                                    
-                                    # Add to vector store
-                                    vector_store.add_documents(dataset.collection_name, documents)
-                                    
-                                    # Save file metadata
-                                    uploaded_file = UploadedFile(
-                                        dataset_id=dataset.id,
-                                        original_filename=original_filename,
-                                        stored_filename=stored_filename,
-                                        file_path=final_path,
-                                        file_type=os.path.splitext(original_filename)[1],
-                                        file_size=file_size,
-                                        chunks_count=len(documents)
-                                    )
-                                    db.add(uploaded_file)
-                                    
-                                    processed_files.append({
-                                        'id': uploaded_file.id,
-                                        'filename': original_filename,
-                                        'chunks': len(documents),
-                                        'size': file_size,
-                                        'from_zip': filename
-                                    })
-                                    
-                                except Exception as e:
-                                    errors.append({
-                                        'filename': zip_file_name,
-                                        'error': f"Error in ZIP: {str(e)}"
-                                    })
-                                    print(f"Error processing file from ZIP {zip_file_name}: {e}")
+                                    try:
+                                        extracted_path = os.path.join(extract_folder, zip_file_name)
+                                        
+                                        if not os.path.isfile(extracted_path):
+                                            print(f"Skipping {zip_file_name} - not a file")
+                                            continue
+                                        
+                                        # Get just the filename (remove directory path)
+                                        original_filename = os.path.basename(zip_file_name)
+                                        original_filename = secure_filename(original_filename)
+                                        
+                                        print(f"Processing file {processed_count}/{total_files}: {original_filename}")
+                                        yield send_progress('status', {'message': f'Processing {original_filename}...', 'total': total_files, 'processed': processed_count, 'filename': original_filename})
+                                        
+                                        # Move to dataset folder with unique name
+                                        stored_filename = f"{uuid.uuid4().hex}_{original_filename}"
+                                        final_path = os.path.join(dataset_folder, stored_filename)
+                                        shutil.move(extracted_path, final_path)
+                                        
+                                        file_size = os.path.getsize(final_path)
+                                        
+                                        # Process file
+                                        documents = file_processor.process_file(final_path, original_filename)
+                                        
+                                        # Add to vector store
+                                        vector_store.add_documents(dataset.collection_name, documents)
+                                        
+                                        # Save file metadata
+                                        uploaded_file = UploadedFile(
+                                            dataset_id=dataset.id,
+                                            original_filename=original_filename,
+                                            stored_filename=stored_filename,
+                                            file_path=final_path,
+                                            file_type=os.path.splitext(original_filename)[1],
+                                            file_size=file_size,
+                                            chunks_count=len(documents)
+                                        )
+                                        db.add(uploaded_file)
+                                        db.flush()  # Flush to get the ID
+                                        
+                                        file_id = uploaded_file.id
+                                        db.commit()  # Commit each file immediately
+                                        
+                                        processed_files.append({
+                                            'id': file_id,
+                                            'filename': original_filename,
+                                            'chunks': len(documents),
+                                            'size': file_size,
+                                            'from_zip': filename
+                                        })
+                                        print(f"✓ Successfully saved: {original_filename} (ID: {file_id})")
+                                        
+                                    except Exception as e:
+                                        errors.append({
+                                            'filename': os.path.basename(zip_file_name),
+                                            'error': f"Error in ZIP: {str(e)}"
+                                        })
+                                        print(f"✗ ERROR processing {zip_file_name}: {e}")
+                                        import traceback
+                                        traceback.print_exc()
                             
                             # Cleanup temp extraction folder
                             shutil.rmtree(extract_folder, ignore_errors=True)
-                            
-                    finally:
-                        # Remove temp ZIP file
-                        if os.path.exists(temp_zip_path):
-                            os.remove(temp_zip_path)
-                
-                else:
-                    # Regular file upload (not a ZIP)
-                    processed_count += 1
-                    print(f"Processing file {processed_count}/{total_files}: {filename}")
-                    yield send_progress('status', {'message': f'Processing {filename}...', 'total': total_files, 'processed': processed_count, 'filename': filename})
+                        
+                        except Exception as e:
+                            print(f"Error extracting ZIP file: {e}")
+                            errors.append({
+                                'filename': filename,
+                                'error': f"Error extracting ZIP: {str(e)}"
+                            })
+                            import traceback
+                            traceback.print_exc()
+                        finally:
+                            # Remove temp ZIP file
+                            if os.path.exists(temp_zip_path):
+                                os.remove(temp_zip_path)
                     
-                    stored_filename = f"{uuid.uuid4().hex}_{filename}"
-                    file_path = os.path.join(dataset_folder, stored_filename)
-                    
-                    # Save file persistently
-                    file.save(file_path)
-                    file_size = os.path.getsize(file_path)
-                    
-                    # Process file and extract text/embeddings
-                    documents = file_processor.process_file(file_path, filename)
-                    
-                    # Add to vector store
-                    vector_store.add_documents(dataset.collection_name, documents)
-                    
-                    # Save file metadata to database
-                    uploaded_file = UploadedFile(
-                        dataset_id=dataset.id,
-                        original_filename=filename,
-                        stored_filename=stored_filename,
-                        file_path=file_path,
-                        file_type=os.path.splitext(filename)[1],
-                        file_size=file_size,
-                        chunks_count=len(documents)
-                    )
-                    db.add(uploaded_file)
-                    
-                    processed_files.append({
-                        'id': uploaded_file.id,
-                        'filename': filename,
-                        'chunks': len(documents),
-                        'size': file_size
-                    })
+                    else:
+                        # Regular file upload (not a ZIP)
+                        processed_count += 1
+                        print(f"Processing file {processed_count}/{total_files}: {filename}")
+                        yield send_progress('status', {'message': f'Processing {filename}...', 'total': total_files, 'processed': processed_count, 'filename': filename})
+                        
+                        stored_filename = f"{uuid.uuid4().hex}_{filename}"
+                        file_path = os.path.join(dataset_folder, stored_filename)
+                        
+                        # Save file persistently
+                        file.save(file_path)
+                        file_size = os.path.getsize(file_path)
+                        
+                        # Process file and extract text/embeddings
+                        documents = file_processor.process_file(file_path, filename)
+                        
+                        # Add to vector store
+                        vector_store.add_documents(dataset.collection_name, documents)
+                        
+                        # Save file metadata to database
+                        uploaded_file = UploadedFile(
+                            dataset_id=dataset.id,
+                            original_filename=filename,
+                            stored_filename=stored_filename,
+                            file_path=file_path,
+                            file_type=os.path.splitext(filename)[1],
+                            file_size=file_size,
+                            chunks_count=len(documents)
+                        )
+                        db.add(uploaded_file)
+                        db.flush()  # Flush to get the ID
+                        
+                        file_id = uploaded_file.id
+                        db.commit()  # Commit each file immediately
+                        
+                        processed_files.append({
+                            'id': file_id,
+                            'filename': filename,
+                            'chunks': len(documents),
+                            'size': file_size
+                        })
+                        print(f"Successfully added file: {filename} (ID: {file_id})")
                         
                 except Exception as e:
                     errors.append({
