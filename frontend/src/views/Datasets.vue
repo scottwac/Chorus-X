@@ -50,29 +50,46 @@
           @dragover.prevent
           @dragenter="dragEnter"
           @dragleave="dragLeave"
-          :class="dragActive ? 'border-chorus-green-500 bg-chorus-green-50' : 'border-gray-300 bg-gray-50'"
-          class="border-2 border-dashed rounded-lg p-6 text-center cursor-pointer hover:bg-chorus-green-50 hover:border-chorus-green-400"
-          @click="triggerFileInput(dataset.id)"
+          :class="[
+            dragActive ? 'border-chorus-green-500 bg-chorus-green-50' : 'border-gray-300 bg-gray-50',
+            uploadingDatasets[dataset.id] ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-chorus-green-50 hover:border-chorus-green-400'
+          ]"
+          class="border-2 border-dashed rounded-lg p-6 text-center"
+          @click="!uploadingDatasets[dataset.id] && triggerFileInput(dataset.id)"
         >
           <input
+            :id="`fileInput-${dataset.id}`"
             type="file"
-            :ref="`fileInput-${dataset.id}`"
             @change="handleFileSelect($event, dataset.id)"
             multiple
             accept=".txt,.pdf,.docx,.md,.png,.jpg,.jpeg,.gif,.bmp,.webp"
             class="hidden"
+            :disabled="uploadingDatasets[dataset.id]"
           />
-          <div class="text-4xl mb-2">📤</div>
-          <p class="text-sm text-gray-600">Drop files here or click to upload</p>
+          <div class="text-4xl mb-2">{{ uploadingDatasets[dataset.id] ? '⏳' : '📤' }}</div>
+          <p class="text-sm text-gray-600">
+            {{ uploadingDatasets[dataset.id] ? 'Uploading files...' : 'Drop files here or click to upload' }}
+          </p>
           <p class="text-xs text-gray-500 mt-1">Supports: Text, PDF, DOCX, MD, Images</p>
         </div>
 
         <!-- Upload Progress -->
         <div v-if="uploadingDatasets[dataset.id]" class="mt-4">
-          <div class="flex items-center justify-center space-x-2">
-            <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-chorus-green-600"></div>
-            <span class="text-sm text-gray-600">Processing files...</span>
+          <div class="mb-2">
+            <div class="flex items-center justify-between text-sm mb-1">
+              <span class="text-gray-600">Uploading {{ uploadProgress[dataset.id]?.current || 0 }} of {{ uploadProgress[dataset.id]?.total || 0 }} files</span>
+              <span class="text-gray-600">{{ uploadProgress[dataset.id]?.percentage || 0 }}%</span>
+            </div>
+            <div class="w-full bg-gray-200 rounded-full h-2.5">
+              <div 
+                class="bg-chorus-green-600 h-2.5 rounded-full transition-all duration-300"
+                :style="{ width: `${uploadProgress[dataset.id]?.percentage || 0}%` }"
+              ></div>
+            </div>
           </div>
+          <p class="text-xs text-gray-500 text-center">
+            {{ uploadProgress[dataset.id]?.currentFile || 'Processing...' }}
+          </p>
         </div>
       </div>
     </div>
@@ -212,6 +229,7 @@ const showFileContent = ref(false)
 const newDataset = ref({ name: '', description: '' })
 const dragActive = ref(false)
 const uploadingDatasets = ref({})
+const uploadProgress = ref({})
 const selectedDataset = ref(null)
 const datasetFiles = ref([])
 const currentFile = ref(null)
@@ -262,7 +280,10 @@ const handleDrop = async (event, datasetId) => {
 }
 
 const triggerFileInput = (datasetId) => {
-  const input = document.querySelector(`input[ref="fileInput-${datasetId}"]`)
+  // Don't allow clicking if already uploading
+  if (uploadingDatasets.value[datasetId]) return
+  
+  const input = document.getElementById(`fileInput-${datasetId}`)
   if (input) input.click()
 }
 
@@ -274,16 +295,54 @@ const handleFileSelect = async (event, datasetId) => {
 const uploadFilesToDataset = async (datasetId, files) => {
   if (files.length === 0) return
 
+  // Check if already uploading
+  if (uploadingDatasets.value[datasetId]) {
+    alert('Please wait for the current upload to complete')
+    return
+  }
+
   uploadingDatasets.value[datasetId] = true
+  uploadProgress.value[datasetId] = {
+    current: 0,
+    total: files.length,
+    percentage: 0,
+    currentFile: ''
+  }
 
   try {
-    await uploadFiles(datasetId, files)
+    // Process files in batches of 5 for better performance
+    const batchSize = 5
+    for (let i = 0; i < files.length; i += batchSize) {
+      const batch = files.slice(i, i + batchSize)
+      
+      // Update progress
+      uploadProgress.value[datasetId].current = i
+      uploadProgress.value[datasetId].percentage = Math.round((i / files.length) * 100)
+      uploadProgress.value[datasetId].currentFile = `Processing ${batch.map(f => f.name).join(', ')}...`
+      
+      // Upload batch
+      await uploadFiles(datasetId, batch)
+    }
+    
+    // Final update
+    uploadProgress.value[datasetId].current = files.length
+    uploadProgress.value[datasetId].percentage = 100
+    uploadProgress.value[datasetId].currentFile = 'Complete!'
+    
+    // Reload datasets
     loadDatasets()
+    
+    // Show success message
+    setTimeout(() => {
+      uploadingDatasets.value[datasetId] = false
+      delete uploadProgress.value[datasetId]
+    }, 1000)
+    
   } catch (error) {
     console.error('Failed to upload files:', error)
-    alert('Failed to upload files')
-  } finally {
+    alert(`Failed to upload files: ${error.message || 'Unknown error'}`)
     uploadingDatasets.value[datasetId] = false
+    delete uploadProgress.value[datasetId]
   }
 }
 

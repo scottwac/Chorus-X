@@ -210,7 +210,20 @@ def get_file_content(dataset_id, file_id):
         return jsonify({'error': 'File not found'}), 404
     
     try:
-        # Read file content
+        # Check if it's an image file
+        if uploaded_file.file_type in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:
+            # For images, we'll return the file path and let frontend handle display
+            return jsonify({
+                'id': uploaded_file.id,
+                'filename': uploaded_file.original_filename,
+                'file_type': uploaded_file.file_type,
+                'file_size': uploaded_file.file_size,
+                'is_image': True,
+                'chunks_count': uploaded_file.chunks_count,
+                'created_at': uploaded_file.created_at.isoformat()
+            })
+        
+        # Read text file content
         with open(uploaded_file.file_path, 'rb') as f:
             content = f.read()
         
@@ -226,11 +239,30 @@ def get_file_content(dataset_id, file_id):
             'file_type': uploaded_file.file_type,
             'file_size': uploaded_file.file_size,
             'content': text_content,
+            'is_image': False,
             'chunks_count': uploaded_file.chunks_count,
             'created_at': uploaded_file.created_at.isoformat()
         })
     except Exception as e:
         return jsonify({'error': f'Failed to read file: {str(e)}'}), 500
+
+@app.route('/api/datasets/<int:dataset_id>/files/<int:file_id>/image', methods=['GET'])
+def get_file_image(dataset_id, file_id):
+    """Get actual image file"""
+    from flask import send_file
+    db = get_db()
+    uploaded_file = db.query(UploadedFile).filter_by(id=file_id, dataset_id=dataset_id).first()
+    
+    if not uploaded_file:
+        return jsonify({'error': 'File not found'}), 404
+    
+    if uploaded_file.file_type not in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:
+        return jsonify({'error': 'File is not an image'}), 400
+    
+    try:
+        return send_file(uploaded_file.file_path, mimetype=f'image/{uploaded_file.file_type[1:]}')
+    except Exception as e:
+        return jsonify({'error': f'Failed to read image: {str(e)}'}), 500
 
 @app.route('/api/datasets/<int:dataset_id>/files/<int:file_id>', methods=['DELETE'])
 def delete_file(dataset_id, file_id):
@@ -463,8 +495,73 @@ def chat_with_bot(bot_id):
     
     # Handle different intents
     if intent == 'find_image':
-        # Image search functionality (to be implemented)
-        response_text = "🖼️ Image search functionality is coming soon! I detected you want to find an image from the dataset."
+        # Image search functionality
+        if not dataset:
+            response_text = "🖼️ No dataset is connected to this bot. Please add a dataset to search for images."
+            
+            chat_entry = ChatHistory(
+                bot_id=bot_id,
+                user_message=user_message,
+                bot_response=response_text
+            )
+            db.add(chat_entry)
+            db.commit()
+            
+            return jsonify({
+                'response': response_text,
+                'intent': intent,
+                'images': [],
+                'debug': {
+                    'intent_detected': intent,
+                    'status': 'no_dataset'
+                }
+            })
+        
+        # Search for image-related documents in the vector store
+        n_results = rag_count if rag_count is not None else (bot.rag_results_count or 5)
+        relevant_docs = vector_store.query_collection(dataset.collection_name, user_message, n_results=n_results * 2)
+        
+        # Filter for image-related documents
+        image_results = []
+        seen_filenames = set()
+        
+        for doc in relevant_docs:
+            metadata = doc.get('metadata', {})
+            image_type = metadata.get('image_type')
+            filename = metadata.get('filename', '')
+            
+            # Check if this is an image document
+            if image_type in ['ocr', 'description'] and filename and filename not in seen_filenames:
+                seen_filenames.add(filename)
+                
+                # Get the actual file from database
+                uploaded_file = db.query(UploadedFile).filter_by(
+                    dataset_id=dataset.id,
+                    original_filename=filename
+                ).first()
+                
+                if uploaded_file and uploaded_file.file_type in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:
+                    image_results.append({
+                        'filename': filename,
+                        'file_id': uploaded_file.id,
+                        'file_path': uploaded_file.file_path,
+                        'description': doc.get('text', ''),
+                        'relevance_score': 1 - doc.get('distance', 0),
+                        'file_size': uploaded_file.file_size
+                    })
+        
+        # Limit to top results
+        image_results = image_results[:min(5, n_results)]
+        
+        if image_results:
+            response_text = f"🖼️ I found {len(image_results)} relevant image(s) in the dataset:"
+            for idx, img in enumerate(image_results, 1):
+                response_text += f"\n\n{idx}. **{img['filename']}**"
+                # Add a snippet of the description
+                desc_snippet = img['description'][:150] + "..." if len(img['description']) > 150 else img['description']
+                response_text += f"\n   {desc_snippet}"
+        else:
+            response_text = "🖼️ I couldn't find any relevant images in the dataset for your query. Try being more specific or check if images have been uploaded."
         
         chat_entry = ChatHistory(
             bot_id=bot_id,
@@ -477,9 +574,12 @@ def chat_with_bot(bot_id):
         return jsonify({
             'response': response_text,
             'intent': intent,
+            'images': image_results,
             'debug': {
                 'intent_detected': intent,
-                'status': 'not_implemented'
+                'images_found': len(image_results),
+                'total_docs_searched': len(relevant_docs),
+                'rag_count_used': n_results
             }
         })
     

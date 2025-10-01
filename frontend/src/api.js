@@ -22,6 +22,7 @@ export const uploadFiles = (datasetId, files) => {
 }
 export const deleteDataset = (datasetId) => api.delete(`/datasets/${datasetId}`)
 export const getFileContent = (datasetId, fileId) => api.get(`/datasets/${datasetId}/files/${fileId}`)
+export const getFileImage = (datasetId, fileId) => `${API_BASE_URL}/datasets/${datasetId}/files/${fileId}/image`
 export const deleteFile = (datasetId, fileId) => api.delete(`/datasets/${datasetId}/files/${fileId}`)
 
 // Chorus Models

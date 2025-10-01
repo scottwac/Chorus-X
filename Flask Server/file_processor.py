@@ -9,6 +9,12 @@ from llm_service import LLMService
 class FileProcessor:
     def __init__(self):
         self.llm_service = LLMService()
+        
+        # Set Tesseract path for Windows if not in PATH
+        if os.name == 'nt':  # Windows
+            tesseract_path = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+            if os.path.exists(tesseract_path):
+                pytesseract.pytesseract.tesseract_cmd = tesseract_path
     
     def process_file(self, file_path: str, filename: str) -> List[Dict]:
         """

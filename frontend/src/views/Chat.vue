@@ -77,6 +77,26 @@
           >
             <div class="whitespace-pre-wrap">{{ message.content }}</div>
             
+            <!-- Images Display -->
+            <div v-if="message.images && message.images.length > 0" class="mt-4 space-y-3">
+              <div
+                v-for="(image, imgIdx) in message.images"
+                :key="imgIdx"
+                class="border border-gray-300 rounded-lg p-3 bg-white"
+              >
+                <div class="font-semibold text-sm mb-2">{{ image.filename }}</div>
+                <img
+                  :src="getImageUrl(image)"
+                  :alt="image.filename"
+                  class="max-w-full h-auto rounded cursor-pointer hover:opacity-90"
+                  @click="openImageModal(image)"
+                />
+                <div class="text-xs text-gray-500 mt-2">
+                  Relevance: {{ Math.round(image.relevance_score * 100) }}%
+                </div>
+              </div>
+            </div>
+            
             <!-- Intent Badge -->
             <div v-if="message.intent && message.intent !== 'text'" class="mt-2">
               <span class="inline-block px-2 py-1 text-xs rounded-full" 
@@ -163,13 +183,35 @@
         </div>
       </div>
     </div>
+
+    <!-- Image Modal -->
+    <div
+      v-if="selectedImage"
+      class="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4"
+      @click="selectedImage = null"
+    >
+      <div class="max-w-6xl max-h-[90vh] relative">
+        <button
+          @click="selectedImage = null"
+          class="absolute -top-10 right-0 text-white text-3xl hover:text-gray-300"
+        >
+          ×
+        </button>
+        <img
+          :src="getImageUrl(selectedImage)"
+          :alt="selectedImage.filename"
+          class="max-w-full max-h-[90vh] object-contain"
+        />
+        <div class="text-white text-center mt-4">{{ selectedImage.filename }}</div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
-import { getBots, chatWithBot, getChatHistory } from '../api'
+import { getBots, chatWithBot, getChatHistory, getFileImage } from '../api'
 
 const route = useRoute()
 const botId = parseInt(route.params.botId)
@@ -181,6 +223,7 @@ const loading = ref(false)
 const showDebug = ref(false)
 const messagesContainer = ref(null)
 const ragCount = ref(5)
+const selectedImage = ref(null)
 
 const loadBot = async () => {
   try {
@@ -235,6 +278,7 @@ const sendMessage = async () => {
       role: 'assistant',
       content: response.data.response,
       intent: response.data.intent,
+      images: response.data.images || [],
       debug: response.data.debug
     })
 
@@ -249,6 +293,16 @@ const sendMessage = async () => {
   } finally {
     loading.value = false
   }
+}
+
+const getImageUrl = (image) => {
+  // Get bot's dataset ID
+  if (!bot.value || !bot.value.dataset_id) return ''
+  return getFileImage(bot.value.dataset_id, image.file_id)
+}
+
+const openImageModal = (image) => {
+  selectedImage.value = image
 }
 
 const clearHistory = () => {
