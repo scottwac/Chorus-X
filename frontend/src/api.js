@@ -43,5 +43,8 @@ export const chatWithBot = (botId, message, ragCount = null) => {
 }
 export const getChatHistory = (botId) => api.get(`/bots/${botId}/history`)
 
+// Health Check
+export const checkHealth = () => api.get('/health')
+
 export default api
 
