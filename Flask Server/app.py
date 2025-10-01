@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, Response, stream_with_context
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
@@ -95,87 +95,104 @@ def create_dataset():
 
 @app.route('/api/datasets/<int:dataset_id>/upload', methods=['POST'])
 def upload_files(dataset_id):
-    """Upload files to a dataset (including ZIP files that will be extracted)"""
-    try:
-        db = get_db()
-        dataset = db.query(Dataset).filter_by(id=dataset_id).first()
-        
-        if not dataset:
-            return jsonify({'error': 'Dataset not found'}), 404
-        
-        if 'files' not in request.files:
-            return jsonify({'error': 'No files provided'}), 400
-        
-        # Create dataset-specific folder
-        dataset_folder = os.path.join(app.config['UPLOAD_FOLDER'], f"dataset_{dataset.id}")
-        os.makedirs(dataset_folder, exist_ok=True)
-        
-        files = request.files.getlist('files')
-        processed_files = []
-        errors = []
-        total_files = 0
-        processed_count = 0
-        
-        # Count total files including those in ZIP files
-        for file in files:
-            if file.filename:
-                filename = secure_filename(file.filename)
-                if filename.lower().endswith('.zip'):
-                    # Count files in ZIP
-                    temp_zip_path = os.path.join(dataset_folder, f"temp_{filename}")
-                    file.save(temp_zip_path)
-                    try:
-                        import zipfile
-                        with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
-                            total_files += len([f for f in zip_ref.namelist() if not f.endswith('/')])
-                    except Exception as e:
-                        print(f"Error counting ZIP files: {e}")
-                        total_files += 1
-                    finally:
-                        if os.path.exists(temp_zip_path):
-                            os.remove(temp_zip_path)
-                else:
-                    total_files += 1
-        
-        print(f"Total files to process: {total_files}")
-        
-        for file in files:
-            if file.filename == '':
-                continue
+    """Upload files to a dataset (including ZIP files that will be extracted) with streaming progress"""
+    import json
+    
+    def send_progress(event_type, data):
+        """Helper to format SSE messages"""
+        return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    
+    def generate():
+        """Generator that yields progress updates during upload"""
+        try:
+            db = get_db()
+            dataset = db.query(Dataset).filter_by(id=dataset_id).first()
             
-            try:
-                filename = secure_filename(file.filename)
-                file_extension = os.path.splitext(filename)[1].lower()
+            if not dataset:
+                yield send_progress('error', {'message': 'Dataset not found'})
+                return
+            
+            if 'files' not in request.files:
+                yield send_progress('error', {'message': 'No files provided'})
+                return
+            
+            # Create dataset-specific folder
+            dataset_folder = os.path.join(app.config['UPLOAD_FOLDER'], f"dataset_{dataset.id}")
+            os.makedirs(dataset_folder, exist_ok=True)
+            
+            files = request.files.getlist('files')
+            processed_files = []
+            errors = []
+            total_files = 0
+            processed_count = 0
+            
+            # Count total files including those in ZIP files
+            for file in files:
+                if file.filename:
+                    filename = secure_filename(file.filename)
+                    if filename.lower().endswith('.zip'):
+                        # Count files in ZIP
+                        temp_zip_path = os.path.join(dataset_folder, f"temp_{filename}")
+                        file.save(temp_zip_path)
+                        try:
+                            import zipfile
+                            with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
+                                total_files += len([f for f in zip_ref.namelist() if not f.endswith('/')])
+                        except Exception as e:
+                            print(f"Error counting ZIP files: {e}")
+                            total_files += 1
+                        finally:
+                            if os.path.exists(temp_zip_path):
+                                os.remove(temp_zip_path)
+                        
+                        # Seek back to beginning of file stream for next save
+                        file.seek(0)
+                    else:
+                        total_files += 1
+            
+            print(f"Total files to process: {total_files}")
+            yield send_progress('status', {'message': f'Preparing to process {total_files} file(s)...', 'total': total_files, 'processed': 0})
+            
+            for file in files:
+                if file.filename == '':
+                    continue
                 
-                # Check if this is a ZIP file
-                if file_extension == '.zip':
-                    # Handle ZIP file extraction
-                    import zipfile
-                    import tempfile
+                try:
+                    filename = secure_filename(file.filename)
+                    file_extension = os.path.splitext(filename)[1].lower()
                     
-                    # Save ZIP to temp location
-                    temp_zip_path = os.path.join(dataset_folder, f"temp_{uuid.uuid4().hex}.zip")
-                    file.save(temp_zip_path)
-                    
-                    try:
-                        # Extract ZIP file
-                        with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
-                            # Get list of files in ZIP
-                            zip_files = [f for f in zip_ref.namelist() if not f.endswith('/') and not f.startswith('__MACOSX')]
-                            
-                            print(f"Extracting ZIP file '{filename}' with {len(zip_files)} files")
-                            
-                            # Create temp extraction folder
-                            extract_folder = os.path.join(dataset_folder, f"temp_extract_{uuid.uuid4().hex}")
-                            os.makedirs(extract_folder, exist_ok=True)
-                            
-                            # Extract files
-                            zip_ref.extractall(extract_folder)
-                            
-                            # Process each extracted file
-                            for i, zip_file_name in enumerate(zip_files):
-                                processed_count += 1
-                                print(f"Processing file {processed_count}/{total_files}: {zip_file_name}")
+                    # Check if this is a ZIP file
+                    if file_extension == '.zip':
+                        # Handle ZIP file extraction
+                        import zipfile
+                        import tempfile
+                        
+                        # Save ZIP to temp location
+                        temp_zip_path = os.path.join(dataset_folder, f"temp_{uuid.uuid4().hex}.zip")
+                        file.save(temp_zip_path)
+                        
+                        try:
+                            # Extract ZIP file
+                            with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
+                                # Get list of files in ZIP
+                                zip_files = [f for f in zip_ref.namelist() if not f.endswith('/') and not f.startswith('__MACOSX')]
+                                
+                                print(f"Extracting ZIP file '{filename}' with {len(zip_files)} files")
+                                yield send_progress('status', {'message': f'Extracting {filename} ({len(zip_files)} files)...', 'total': total_files, 'processed': processed_count})
+                                
+                                # Create temp extraction folder
+                                extract_folder = os.path.join(dataset_folder, f"temp_extract_{uuid.uuid4().hex}")
+                                os.makedirs(extract_folder, exist_ok=True)
+                                
+                                # Extract files
+                                zip_ref.extractall(extract_folder)
+                                
+                                # Process each extracted file
+                                for i, zip_file_name in enumerate(zip_files):
+                                    processed_count += 1
+                                    original_filename = os.path.basename(zip_file_name)
+                                    print(f"Processing file {processed_count}/{total_files}: {zip_file_name}")
+                                    yield send_progress('status', {'message': f'Processing {original_filename}...', 'total': total_files, 'processed': processed_count, 'filename': original_filename})
                                 
                                 try:
                                     extracted_path = os.path.join(extract_folder, zip_file_name)
@@ -239,6 +256,7 @@ def upload_files(dataset_id):
                     # Regular file upload (not a ZIP)
                     processed_count += 1
                     print(f"Processing file {processed_count}/{total_files}: {filename}")
+                    yield send_progress('status', {'message': f'Processing {filename}...', 'total': total_files, 'processed': processed_count, 'filename': filename})
                     
                     stored_filename = f"{uuid.uuid4().hex}_{filename}"
                     file_path = os.path.join(dataset_folder, stored_filename)
@@ -271,32 +289,35 @@ def upload_files(dataset_id):
                         'chunks': len(documents),
                         'size': file_size
                     })
-                    
-            except Exception as e:
-                errors.append({
-                    'filename': file.filename,
-                    'error': str(e)
-                })
-                print(f"Error processing file {file.filename}: {e}")
+                        
+                except Exception as e:
+                    errors.append({
+                        'filename': file.filename,
+                        'error': str(e)
+                    })
+                    print(f"Error processing file {file.filename}: {e}")
         
-        # Update file count
-        dataset.file_count += len(processed_files)
-        db.commit()
-        
-        response = {
-            'message': f'Processed {len(processed_files)} files',
-            'files': processed_files
-        }
-        
-        if errors:
-            response['errors'] = errors
-            response['message'] += f', {len(errors)} failed'
-        
-        return jsonify(response)
-    except Exception as e:
-        db.rollback()
-        print(f"Error uploading files: {e}")
-        return jsonify({'error': f'Failed to upload files: {str(e)}'}), 500
+            # Update file count
+            dataset.file_count += len(processed_files)
+            db.commit()
+            
+            response = {
+                'message': f'Processed {len(processed_files)} files',
+                'files': processed_files
+            }
+            
+            if errors:
+                response['errors'] = errors
+                response['message'] += f', {len(errors)} failed'
+            
+            yield send_progress('final', response)
+            
+        except Exception as e:
+            db.rollback()
+            print(f"Error uploading files: {e}")
+            yield send_progress('error', {'message': f'Failed to upload files: {str(e)}'})
+    
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 @app.route('/api/datasets/<int:dataset_id>', methods=['GET'])
 def get_dataset(dataset_id):
@@ -593,6 +614,331 @@ def delete_bot(bot_id):
     
     return jsonify({'message': 'Bot deleted'})
 
+@app.route('/api/bots/<int:bot_id>/chat/stream', methods=['GET'])
+def chat_with_bot_stream(bot_id):
+    """Stream chat responses with real-time status updates via SSE"""
+    user_message = request.args.get('message', '')
+    rag_count = request.args.get('rag_count', type=int)
+    
+    def sse_message(event_type, data):
+        """Format SSE message"""
+        import json
+        return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    
+    def generate():
+        """Generator that yields SSE events"""
+        try:
+            db = get_db()
+            bot = db.query(Bot).filter_by(id=bot_id).first()
+            
+            if not bot:
+                yield sse_message('error', {'message': 'Bot not found'})
+                return
+            
+            # Get dataset and chorus model
+            dataset = db.query(Dataset).filter_by(id=bot.dataset_id).first() if bot.dataset_id else None
+            chorus_model = db.query(ChorusModel).filter_by(id=bot.chorus_model_id).first() if bot.chorus_model_id else None
+            
+            if not chorus_model:
+                yield sse_message('error', {'message': 'Bot has no Chorus model configured'})
+                return
+            
+            # Step 1: Classify user intent
+            from llm_service import LLMService
+            llm_service_instance = LLMService()
+            
+            yield sse_message('status', {'message': 'Classifying user intent...'})
+            intent = llm_service_instance.classify_user_intent(user_message)
+            yield sse_message('status', {'message': f'Determined user inquiry as: {intent}'})
+            
+            # Handle different intents
+            if intent == 'generate_chart':
+                yield sse_message('status', {'message': 'Retrieving relevant data from dataset...'})
+                n_results = rag_count if rag_count is not None else (bot.rag_results_count or 50)
+                
+                context = ""
+                if dataset:
+                    relevant_docs = vector_store.query_collection(dataset.collection_name, user_message, n_results=n_results)
+                    context = "\n\n".join([f"[{doc['metadata'].get('filename', 'Unknown')}]\n{doc['text']}" for doc in relevant_docs])
+                    yield sse_message('status', {'message': f'Retrieved {len(relevant_docs)} documents'})
+                
+                yield sse_message('status', {'message': 'Analyzing data and generating chart...'})
+                chart_result = chart_generator.generate_chart(user_message, context)
+                yield sse_message('status', {'message': 'Chart generated successfully'})
+                
+                # Generate explanation
+                yield sse_message('status', {'message': 'Generating explanation...'})
+                explanation_prompt = f"""The user asked: "{user_message}"
+
+A chart has been generated showing: {chart_result['title']}
+
+Provide a brief, clear explanation of what the chart shows based on the data used."""
+                
+                explanation = llm_service_instance.call_llm('openai', 'gpt-5-2025-08-07',
+                                                            [{'role': 'user', 'content': explanation_prompt}])
+                
+                # Save to chat history
+                chat_entry = ChatHistory(
+                    bot_id=bot_id,
+                    user_message=user_message,
+                    bot_response=explanation
+                )
+                db.add(chat_entry)
+                db.commit()
+                
+                # Send final response
+                yield sse_message('final', {
+                    'response': explanation,
+                    'intent': intent,
+                    'generated_chart': {
+                        'filename': chart_result['filename'],
+                        'chart_type': chart_result['chart_type'],
+                        'title': chart_result['title']
+                    }
+                })
+                return
+            
+            elif intent == 'find_image':
+                yield sse_message('status', {'message': 'Searching for images in dataset...'})
+                
+                if not dataset:
+                    response_text = "🖼️ No dataset is connected to this bot. Please add a dataset to search for images."
+                    chat_entry = ChatHistory(bot_id=bot_id, user_message=user_message, bot_response=response_text)
+                    db.add(chat_entry)
+                    db.commit()
+                    
+                    yield sse_message('final', {
+                        'response': response_text,
+                        'intent': intent,
+                        'images': []
+                    })
+                    return
+                
+                # Search for image-related documents
+                n_results = rag_count if rag_count is not None else (bot.rag_results_count or 50)
+                yield sse_message('status', {'message': f'Retrieving {n_results} relevant documents...'})
+                relevant_docs = vector_store.query_collection(dataset.collection_name, user_message, n_results=n_results * 2)
+                
+                # Get image search settings (defaulting since they come from query params)
+                max_images = 3
+                min_confidence = 0.6
+                
+                # Filter for image-related documents
+                image_results = []
+                seen_filenames = set()
+                
+                for doc in relevant_docs:
+                    metadata = doc.get('metadata', {})
+                    image_type = metadata.get('image_type')
+                    filename = metadata.get('filename', '')
+                    relevance_score = 1 - doc.get('distance', 0)
+                    
+                    if image_type in ['ocr', 'description'] and filename and filename not in seen_filenames:
+                        if relevance_score >= min_confidence:
+                            seen_filenames.add(filename)
+                            
+                            uploaded_file = db.query(UploadedFile).filter_by(
+                                dataset_id=dataset.id,
+                                original_filename=filename
+                            ).first()
+                            
+                            if uploaded_file and uploaded_file.file_type in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:
+                                image_results.append({
+                                    'filename': filename,
+                                    'file_id': uploaded_file.id,
+                                    'file_path': uploaded_file.file_path,
+                                    'description': doc.get('text', ''),
+                                    'relevance_score': relevance_score,
+                                    'file_size': uploaded_file.file_size
+                                })
+                
+                image_results = image_results[:max_images]
+                yield sse_message('status', {'message': f'Found {len(image_results)} matching images'})
+                
+                if image_results:
+                    confidence_text = f" (min {int(min_confidence * 100)}% confidence)" if min_confidence > 0 else ""
+                    response_text = f"🖼️ I found {len(image_results)} relevant image(s) in the dataset{confidence_text}:"
+                    for idx, img in enumerate(image_results, 1):
+                        response_text += f"\n\n{idx}. **{img['filename']}**"
+                        response_text += f" - {int(img['relevance_score'] * 100)}% match"
+                        desc_snippet = img['description'][:150] + "..." if len(img['description']) > 150 else img['description']
+                        response_text += f"\n   {desc_snippet}"
+                else:
+                    if min_confidence > 0:
+                        response_text = f"🖼️ I couldn't find any images matching your query with at least {int(min_confidence * 100)}% confidence."
+                    else:
+                        response_text = "🖼️ I couldn't find any relevant images in the dataset for your query."
+                
+                chat_entry = ChatHistory(bot_id=bot_id, user_message=user_message, bot_response=response_text)
+                db.add(chat_entry)
+                db.commit()
+                
+                yield sse_message('final', {
+                    'response': response_text,
+                    'intent': intent,
+                    'images': image_results
+                })
+                return
+            
+            elif intent == 'generate_image':
+                yield sse_message('status', {'message': 'Preparing image generation...'})
+                
+                try:
+                    reference_image_path = None
+                    reference_filename = None
+                    
+                    # Check if user is referencing a specific image from dataset
+                    if dataset:
+                        import re
+                        filename_pattern = r'([A-Za-z0-9_\-\.]+\.(png|jpg|jpeg|gif|bmp|webp))'
+                        matches = re.findall(filename_pattern, user_message, re.IGNORECASE)
+                        
+                        if matches:
+                            mentioned_filename = matches[0][0]
+                            uploaded_file = db.query(UploadedFile).filter_by(
+                                dataset_id=dataset.id,
+                                original_filename=mentioned_filename
+                            ).first()
+                            
+                            if uploaded_file and uploaded_file.file_type in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:
+                                reference_image_path = uploaded_file.file_path
+                                reference_filename = uploaded_file.original_filename
+                                yield sse_message('status', {'message': f'Using reference image: {reference_filename}'})
+                    
+                    # Generate the image (using defaults for quality/size since they're in query params)
+                    yield sse_message('status', {'message': 'Generating image with AI...'})
+                    image_result = llm_service_instance.generate_image(
+                        prompt=user_message,
+                        reference_image_path=reference_image_path,
+                        quality='high',
+                        size='1024x1024'
+                    )
+                    
+                    # Save the generated image
+                    import base64
+                    import uuid
+                    
+                    generated_folder = os.path.join(app.config['UPLOAD_FOLDER'], 'generated')
+                    os.makedirs(generated_folder, exist_ok=True)
+                    
+                    image_filename = f"generated_{uuid.uuid4().hex}.png"
+                    image_path = os.path.join(generated_folder, image_filename)
+                    
+                    image_bytes = base64.b64decode(image_result['image_base64'])
+                    with open(image_path, 'wb') as f:
+                        f.write(image_bytes)
+                    
+                    yield sse_message('status', {'message': 'Image saved successfully'})
+                    
+                    # Create response text
+                    if reference_filename:
+                        response_text = f"🎨 I've edited the image based on your request!\n\n**Original:** {reference_filename}\n**Edit:** {user_message}"
+                    else:
+                        response_text = f"🎨 I've generated an image for you!\n\n**Prompt:** {image_result['revised_prompt']}"
+                    
+                    # Save to chat history
+                    chat_entry = ChatHistory(
+                        bot_id=bot_id,
+                        user_message=user_message,
+                        bot_response=response_text
+                    )
+                    db.add(chat_entry)
+                    db.commit()
+                    
+                    yield sse_message('final', {
+                        'response': response_text,
+                        'intent': intent,
+                        'generated_image': {
+                            'filename': image_filename,
+                            'path': image_path,
+                            'prompt': image_result['revised_prompt'],
+                            'is_edit': reference_image_path is not None
+                        }
+                    })
+                    return
+                    
+                except Exception as e:
+                    error_text = f"🎨 Sorry, I encountered an error while generating the image: {str(e)}"
+                    
+                    chat_entry = ChatHistory(
+                        bot_id=bot_id,
+                        user_message=user_message,
+                        bot_response=error_text
+                    )
+                    db.add(chat_entry)
+                    db.commit()
+                    
+                    yield sse_message('error', {'message': error_text})
+                    return
+            
+            # Default: text response with Chorus
+            yield sse_message('status', {'message': 'Retrieving relevant context from dataset...'})
+            context = ""
+            n_results = rag_count if rag_count is not None else (bot.rag_results_count or 50)
+            if dataset:
+                relevant_docs = vector_store.query_collection(dataset.collection_name, user_message, n_results=n_results)
+                context = "\n\n".join([f"[{doc['metadata'].get('filename', 'Unknown')}]\n{doc['text']}" for doc in relevant_docs])
+                yield sse_message('status', {'message': f'Retrieved {n_results} relevant context chunks'})
+            
+            # Add bot instructions to context
+            full_context = f"Bot Instructions:\n{bot.instructions}\n\n"
+            if context:
+                full_context += f"Relevant Information:\n{context}"
+            
+            # Run Chorus model - status updates will be sent via callback
+            # Use a list to collect status messages from chorus service
+            status_messages = []
+            
+            def status_callback(message):
+                status_messages.append(message)
+            
+            result = chorus_service.run_chorus(
+                user_query=user_message,
+                context=full_context,
+                responder_llms=chorus_model.responder_llms,
+                evaluator_llms=chorus_model.evaluator_llms,
+                status_callback=status_callback
+            )
+            
+            # Yield all status messages that were collected during chorus execution
+            for msg in status_messages:
+                yield sse_message('status', {'message': msg})
+            
+            # Save to chat history
+            chat_entry = ChatHistory(
+                bot_id=bot_id,
+                user_message=user_message,
+                bot_response=result['final_response']
+            )
+            db.add(chat_entry)
+            db.commit()
+            
+            # Send final response
+            yield sse_message('final', {
+                'response': result['final_response'],
+                'intent': intent,
+                'debug': {
+                    'all_responses': result['responses'],
+                    'votes': result.get('votes'),
+                    'vote_counts': result.get('vote_counts'),
+                    'winner_index': result.get('winner_index')
+                }
+            })
+            
+        except Exception as e:
+            print(f"Error in chat stream: {e}")
+            yield sse_message('error', {'message': str(e)})
+    
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive'
+        }
+    )
+
 @app.route('/api/bots/<int:bot_id>/chat', methods=['POST'])
 def chat_with_bot(bot_id):
     """Send a message to a bot and get response"""
@@ -653,7 +999,7 @@ def chat_with_bot(bot_id):
             })
         
         # Search for image-related documents in the vector store
-        n_results = rag_count if rag_count is not None else (bot.rag_results_count or 5)
+        n_results = rag_count if rag_count is not None else (bot.rag_results_count or 50)
         processing_steps.append(f'Retrieving {n_results} relevant documents...')
         relevant_docs = vector_store.query_collection(dataset.collection_name, user_message, n_results=n_results * 2)
         
@@ -738,14 +1084,16 @@ def chat_with_bot(bot_id):
         # Chart generation functionality
         try:
             processing_steps.append('Retrieving relevant data from dataset...')
-            # Get RAG context for data
-            n_results = rag_count if rag_count is not None else (bot.rag_results_count or 5)
+            # Get RAG context for data - use MORE chunks for charts to get complete data
+            n_results = rag_count if rag_count is not None else (bot.rag_results_count or 100)
             
             context = ""
             if dataset:
                 # Get relevant context from dataset
                 relevant_docs = vector_store.query_collection(dataset.collection_name, user_message, n_results=n_results)
                 context = "\n\n".join([f"[{doc['metadata'].get('filename', 'Unknown')}]\n{doc['text']}" for doc in relevant_docs])
+                print(f"Retrieved {len(relevant_docs)} documents for chart generation")
+                print(f"Total context length: {len(context)} characters")
             
             # Generate the chart
             processing_steps.append('Analyzing data and generating chart...')
@@ -756,10 +1104,14 @@ def chat_with_bot(bot_id):
             # Generate a text response explaining the chart
             explanation_prompt = f"""The user asked: "{user_message}"
 
-A chart has been generated based on the available data. Provide a brief explanation of what the chart shows.
+A chart has been generated showing: {chart_result['title']}
+
+Chart type: {chart_result['chart_type']}
+
+Provide a brief, clear explanation of what the chart shows based on the data used.
 
 Context data:
-{context[:1000]}"""
+{context[:20000]}"""
             
             explanation = llm_service_instance.call_llm(
                 'openai',
@@ -940,23 +1292,17 @@ Context data:
     if context:
         full_context += f"Relevant Information:\n{context}"
     
-    # Run Chorus model
-    num_responders = len(chorus_model.responder_llms)
-    num_evaluators = len(chorus_model.evaluator_llms)
-    processing_steps.append(f'Generating {num_responders} response(s)...')
+    # Run Chorus model with detailed status updates via callback
+    def status_callback(message):
+        processing_steps.append(message)
     
     result = chorus_service.run_chorus(
         user_query=user_message,
         context=full_context,
         responder_llms=chorus_model.responder_llms,
-        evaluator_llms=chorus_model.evaluator_llms
+        evaluator_llms=chorus_model.evaluator_llms,
+        status_callback=status_callback
     )
-    
-    if num_evaluators > 0 and num_responders > 1:
-        processing_steps.append(f'Evaluating responses with {num_evaluators} evaluator(s)...')
-        processing_steps.append(f'Selected best response')
-    else:
-        processing_steps.append('Response generated successfully')
     
     # Save to chat history
     chat_entry = ChatHistory(

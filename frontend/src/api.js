@@ -13,12 +13,52 @@ const api = axios.create({
 export const getDatasets = () => api.get('/datasets')
 export const getDataset = (datasetId) => api.get(`/datasets/${datasetId}`)
 export const createDataset = (data) => api.post('/datasets', data)
-export const uploadFiles = (datasetId, files) => {
+export const uploadFiles = async (datasetId, files, onProgress) => {
   const formData = new FormData()
   files.forEach(file => formData.append('files', file))
-  return api.post(`/datasets/${datasetId}/upload`, formData, {
-    headers: { 'Content-Type': 'multipart/form-data' }
+  
+  // Use fetch with streaming for real-time progress updates
+  const response = await fetch(`${API_BASE_URL}/datasets/${datasetId}/upload`, {
+    method: 'POST',
+    body: formData
   })
+  
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let finalResult = null
+  
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    
+    buffer += decoder.decode(value, { stream: true })
+    
+    // Split by double newlines (SSE format)
+    const lines = buffer.split('\n\n')
+    buffer = lines.pop() // Keep incomplete message in buffer
+    
+    for (const line of lines) {
+      if (!line.trim()) continue
+      
+      // Parse SSE format: "event: type\ndata: {...}"
+      const eventMatch = line.match(/event: (\w+)\ndata: (.+)/)
+      if (eventMatch) {
+        const [_, eventType, dataStr] = eventMatch
+        const data = JSON.parse(dataStr)
+        
+        if (eventType === 'status' && onProgress) {
+          onProgress(data)
+        } else if (eventType === 'final') {
+          finalResult = data
+        } else if (eventType === 'error') {
+          throw new Error(data.message)
+        }
+      }
+    }
+  }
+  
+  return { data: finalResult }
 }
 export const deleteDataset = (datasetId) => api.delete(`/datasets/${datasetId}`)
 export const getFileContent = (datasetId, fileId) => api.get(`/datasets/${datasetId}/files/${fileId}`)

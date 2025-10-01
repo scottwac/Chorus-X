@@ -306,27 +306,22 @@ const uploadFilesToDataset = async (datasetId, files) => {
     current: 0,
     total: files.length,
     percentage: 0,
-    currentFile: ''
+    currentFile: 'Preparing upload...'
   }
 
   try {
-    // Process files in batches of 5 for better performance
-    const batchSize = 5
-    for (let i = 0; i < files.length; i += batchSize) {
-      const batch = files.slice(i, i + batchSize)
-      
-      // Update progress
-      uploadProgress.value[datasetId].current = i
-      uploadProgress.value[datasetId].percentage = Math.round((i / files.length) * 100)
-      uploadProgress.value[datasetId].currentFile = `Processing ${batch.map(f => f.name).join(', ')}...`
-      
-      // Upload batch
-      await uploadFiles(datasetId, batch)
-    }
+    // Upload all files with streaming progress
+    await uploadFiles(datasetId, Array.from(files), (progress) => {
+      // Real-time progress updates from server
+      uploadProgress.value[datasetId] = {
+        current: progress.processed || 0,
+        total: progress.total || files.length,
+        percentage: progress.total ? Math.round((progress.processed / progress.total) * 100) : 0,
+        currentFile: progress.filename || progress.message || 'Processing...'
+      }
+    })
     
     // Final update
-    uploadProgress.value[datasetId].current = files.length
-    uploadProgress.value[datasetId].percentage = 100
     uploadProgress.value[datasetId].currentFile = 'Complete!'
     
     // Reload datasets

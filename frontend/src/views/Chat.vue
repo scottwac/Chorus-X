@@ -64,7 +64,7 @@
               class="p-2 bg-purple-50 rounded text-xs"
             >
               <div class="font-semibold text-purple-700">{{ vote.evaluator }}</div>
-              <div class="text-purple-900">Voted for Response {{ vote.vote }}</div>
+              <div class="text-purple-900">Voted for Response {{ vote.vote + 1 }}</div>
             </div>
           </div>
         </div>
@@ -78,7 +78,7 @@
               :key="responseIdx"
               class="flex items-center justify-between p-2 bg-gray-50 rounded text-xs"
             >
-              <span class="font-medium">Response {{ responseIdx }}</span>
+              <span class="font-medium">Response {{ parseInt(responseIdx) + 1 }}</span>
               <div class="flex items-center gap-2">
                 <div class="w-24 bg-gray-200 rounded-full h-2">
                   <div
@@ -316,10 +316,10 @@
               <div v-if="message.debug.votes" class="text-xs">
                 <div class="font-semibold mb-1">Votes:</div>
                 <div v-for="(vote, i) in message.debug.votes" :key="i" class="text-gray-600">
-                  {{ vote.evaluator }} voted for Response {{ vote.vote }}
+                  {{ vote.evaluator }} voted for Response {{ vote.vote + 1 }}
                 </div>
                 <div class="mt-1 font-semibold">
-                  Winner: Response {{ message.debug.winner_index }}
+                  Winner: Response {{ message.debug.winner_index + 1 }}
                 </div>
               </div>
             </div>
@@ -338,25 +338,26 @@
           <div class="flex-shrink-0 w-8 h-8 bg-chorus-green-100 rounded-full flex items-center justify-center">
             🤖
           </div>
-          <div class="bg-gray-100 rounded-2xl px-4 py-3 min-w-[200px]">
-            <div class="flex gap-2 items-center">
-              <div class="animate-bounce">●</div>
-              <div class="animate-bounce animation-delay-200">●</div>
-              <div class="animate-bounce animation-delay-400">●</div>
-              <span v-if="processingStatus" class="ml-3 text-sm text-gray-600 animate-fade-in">
-                {{ processingStatus }}
+          <div class="bg-gray-100 rounded-2xl px-4 py-3 min-w-[300px]">
+            <div class="flex gap-2 items-center mb-2">
+              <div class="animate-spin h-4 w-4 border-2 border-chorus-green-600 border-t-transparent rounded-full"></div>
+              <span class="text-sm text-gray-700 font-medium">
+                {{ processingStatus || 'Processing your request...' }}
               </span>
             </div>
-            <!-- Processing Steps List -->
-            <div v-if="processingSteps.length > 0" class="mt-3 space-y-1">
+            <!-- Show completed steps -->
+            <div v-if="processingSteps.length > 0" class="mt-3 space-y-1 max-h-32 overflow-y-auto">
               <div 
                 v-for="(step, idx) in processingSteps" 
                 :key="idx"
-                class="text-xs text-gray-500 flex items-center gap-2 animate-fade-in"
+                class="text-xs text-gray-600 flex items-start gap-2"
               >
-                <span class="text-green-500">✓</span>
-                {{ step }}
+                <span class="text-green-500 flex-shrink-0 mt-0.5">✓</span>
+                <span>{{ step }}</span>
               </div>
+            </div>
+            <div v-else class="text-xs text-gray-500 italic">
+              This may take 10-30 seconds depending on the query complexity
             </div>
           </div>
         </div>
@@ -427,7 +428,7 @@ const showDebug = ref(false)
 const showDebugSidebar = ref(false)
 const lastDebugInfo = ref(null)
 const messagesContainer = ref(null)
-const ragCount = ref(5)
+const ragCount = ref(20)
 const selectedImage = ref(null)
 const processingStatus = ref('')
 const processingSteps = ref([])
@@ -482,54 +483,99 @@ const sendMessage = async () => {
   scrollToBottom()
 
   loading.value = true
-  processingStatus.value = 'Processing your request...'
   processingSteps.value = []
+  processingStatus.value = 'Connecting...'
 
   try {
-    // Send message with current RAG count and image search settings
-    const response = await chatWithBot(
-      botId, 
-      userMessage, 
-      ragCount.value,
-      imageSearchSettings.value
-    )
-    
-    // Show all processing steps immediately (no animation delay since they come all at once)
-    if (response.data.processing_steps && response.data.processing_steps.length > 0) {
-      processingSteps.value = response.data.processing_steps
-    }
-    
-    // Clear processing status before showing response
-    processingStatus.value = ''
-    
-    // Add bot response (filtering already done on backend)
-    messages.value.push({
-      role: 'assistant',
-      content: response.data.response,
-      intent: response.data.intent,
-      images: response.data.images || [],
-      generated_image: response.data.generated_image || null,
-      generated_chart: response.data.generated_chart || null,
-      debug: response.data.debug
+    // Use EventSource for real-time SSE updates
+    const params = new URLSearchParams({
+      message: userMessage,
+      rag_count: ragCount.value.toString()
     })
-
-    // Update debug sidebar with latest debug info
-    if (response.data.debug) {
-      lastDebugInfo.value = response.data.debug
+    
+    const streamUrl = `http://localhost:5000/api/bots/${botId}/chat/stream?${params.toString()}`
+    const eventSource = new EventSource(streamUrl)
+    
+    // Handle status updates
+    eventSource.addEventListener('status', (event) => {
+      const data = JSON.parse(event.data)
+      processingSteps.value.push(data.message)
+      processingStatus.value = data.message
+      scrollToBottom()
+    })
+    
+    // Handle final response
+    eventSource.addEventListener('final', (event) => {
+      const data = JSON.parse(event.data)
+      
+      // Close the connection
+      eventSource.close()
+      loading.value = false
+      processingSteps.value = []
+      processingStatus.value = ''
+      
+      // Add bot response
+      messages.value.push({
+        role: 'assistant',
+        content: data.response,
+        intent: data.intent,
+        images: data.images || [],
+        generated_image: data.generated_image || null,
+        generated_chart: data.generated_chart || null,
+        debug: data.debug
+      })
+      
+      // Update debug sidebar
+      if (data.debug) {
+        lastDebugInfo.value = data.debug
+      }
+      
+      scrollToBottom()
+    })
+    
+    // Handle errors
+    eventSource.addEventListener('error', (event) => {
+      const data = event.data ? JSON.parse(event.data) : null
+      
+      eventSource.close()
+      loading.value = false
+      processingSteps.value = []
+      processingStatus.value = ''
+      
+      messages.value.push({
+        role: 'assistant',
+        content: data?.message || 'Sorry, I encountered an error. Please try again.'
+      })
+      
+      scrollToBottom()
+    })
+    
+    // Handle connection errors
+    eventSource.onerror = (error) => {
+      console.error('EventSource error:', error)
+      eventSource.close()
+      loading.value = false
+      processingSteps.value = []
+      processingStatus.value = ''
+      
+      messages.value.push({
+        role: 'assistant',
+        content: 'Sorry, the connection was interrupted. Please try again.'
+      })
+      
+      scrollToBottom()
     }
-
-    await nextTick()
-    scrollToBottom()
+    
   } catch (error) {
     console.error('Failed to send message:', error)
+    loading.value = false
+    processingSteps.value = []
+    processingStatus.value = ''
+    
     messages.value.push({
       role: 'assistant',
       content: 'Sorry, I encountered an error. Please try again.'
     })
-  } finally {
-    loading.value = false
-    processingStatus.value = ''
-    processingSteps.value = []
   }
 }
 

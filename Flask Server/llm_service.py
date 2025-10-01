@@ -202,9 +202,12 @@ Respond with ONLY the classification word: text, find_image, generate_chart, or 
             # Extract the generated image
             if response.data and len(response.data) > 0:
                 image_data = response.data[0]
+                # Get revised prompt, fallback to original if not available or empty
+                revised = getattr(image_data, 'revised_prompt', None)
+                final_prompt = revised if (revised and revised.strip()) else prompt
                 return {
                     'image_base64': image_data.b64_json,
-                    'revised_prompt': getattr(image_data, 'revised_prompt', prompt),
+                    'revised_prompt': final_prompt,
                     'format': 'png'
                 }
             else:

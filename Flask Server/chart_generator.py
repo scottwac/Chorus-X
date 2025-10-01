@@ -48,15 +48,18 @@ class ChartGenerator:
 User Query: {user_query}
 
 Context Data:
-{context[:5000]}
+{context[:50000]}
 
-IMPORTANT INSTRUCTIONS:
-1. Carefully extract ALL relevant numerical data from the context
-2. For time-based data, include ALL time periods (months, quarters, etc.), not just one
-3. Match the chart type to the user's request (bar, line, pie, etc.)
-4. Ensure x_values, y_values, and labels arrays are the SAME length
-5. For monthly data, use month names as labels (e.g., ["Jan 2024", "Feb 2024", ...])
-6. Sort data chronologically if it's time-based
+CRITICAL INSTRUCTIONS:
+1. READ THROUGH THE ENTIRE CONTEXT - there are multiple data entries/documents
+2. Extract ALL relevant numerical data points from EVERY document in the context
+3. For time-based data, include ALL time periods found across ALL documents (months, quarters, etc.)
+4. Do NOT just take data from the first document - scan the entire context
+5. Match the chart type to the user's request (bar, line, pie, etc.)
+6. Ensure x_values, y_values, and labels arrays are the SAME length
+7. For monthly data, use month names as labels (e.g., ["Jan 2024", "Feb 2024", ...])
+8. Sort data chronologically if it's time-based
+9. If you see data for 12 months, include all 12 - don't skip any
 
 Respond ONLY with a JSON object in this exact format:
 {{
@@ -194,6 +197,11 @@ EXAMPLE - If data shows spend across months:
         if chart_type != 'pie':
             ax.set_xlabel(data['x_label'], fontsize=13, fontweight='bold', labelpad=10)
             ax.set_ylabel(data['y_label'], fontsize=13, fontweight='bold', labelpad=10)
+            
+            # Start Y-axis at 0 for numerical data (bar, line charts)
+            if chart_type in ['bar', 'line']:
+                current_ylim = ax.get_ylim()
+                ax.set_ylim(bottom=0, top=current_ylim[1] * 1.1)  # Add 10% padding at top
             
             # Format y-axis with commas for large numbers
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{int(x):,}'))

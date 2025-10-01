@@ -6,7 +6,7 @@ class ChorusService:
     def __init__(self):
         self.llm_service = LLMService()
     
-    def run_chorus(self, user_query: str, context: str, responder_llms: List[Dict], evaluator_llms: List[Dict]) -> Dict:
+    def run_chorus(self, user_query: str, context: str, responder_llms: List[Dict], evaluator_llms: List[Dict], status_callback=None) -> Dict:
         """
         Run the Chorus model:
         1. Get responses from all responder LLMs
@@ -22,6 +22,9 @@ class ChorusService:
         responses = []
         
         for i, llm_config in enumerate(responder_llms):
+            if status_callback:
+                status_callback(f'Getting response from responder {i + 1}/{len(responder_llms)}...')
+            
             messages = [
                 {"role": "system", "content": "You are a helpful assistant. Use the provided context to answer the user's question."},
                 {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {user_query}"}
@@ -39,6 +42,9 @@ class ChorusService:
                 'model': llm_config['model'],
                 'response': response
             })
+            
+            if status_callback:
+                status_callback(f'Received response from {llm_config["provider"]} {llm_config["model"]}')
         
         # If only one responder, return it directly
         if len(responses) == 1:
@@ -51,6 +57,8 @@ class ChorusService:
         
         # Step 2: Have evaluators vote on the best response
         print(f"Getting votes from {len(evaluator_llms)} evaluator LLMs...")
+        if status_callback:
+            status_callback(f'Evaluating responses with {len(evaluator_llms)} evaluator(s)...')
         votes = []
         
         # Format responses for evaluation
@@ -59,7 +67,10 @@ class ChorusService:
             for r in responses
         ])
         
-        for evaluator in evaluator_llms:
+        for idx, evaluator in enumerate(evaluator_llms):
+            if status_callback:
+                status_callback(f'Getting vote from evaluator {idx + 1}/{len(evaluator_llms)}...')
+            
             evaluation_prompt = f"""You are an expert evaluator. Below are {len(responses)} different responses to the same question.
 
 Question: {user_query}
@@ -94,6 +105,8 @@ Respond with ONLY the number (index) of the best response. Just the number, noth
                         'evaluator': f"{evaluator['provider']} {evaluator['model']}",
                         'vote': vote_index
                     })
+                    if status_callback:
+                        status_callback(f'{evaluator["provider"]} {evaluator["model"]} voted for Response {vote_index + 1}')
             except:
                 print(f"Invalid vote received: {vote}")
         
