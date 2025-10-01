@@ -19,18 +19,28 @@
           </div>
         </div>
         
-        <div class="flex gap-2 items-center">
-          <div class="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg bg-white">
-            <label class="text-sm font-medium text-gray-700">RAG:</label>
-            <input
-              v-model.number="ragCount"
-              type="number"
-              min="1"
-              max="20"
-              class="w-16 px-2 py-1 border border-gray-300 rounded text-sm"
-            />
-            <span class="text-xs text-gray-500">chunks</span>
-          </div>
+      <div class="flex gap-2 items-center flex-wrap">
+        <!-- RAG Settings -->
+        <div class="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg bg-white">
+          <label class="text-sm font-medium text-gray-700">RAG:</label>
+          <input
+            v-model.number="ragCount"
+            type="number"
+            min="1"
+            max="20"
+            class="w-16 px-2 py-1 border border-gray-300 rounded text-sm"
+          />
+          <span class="text-xs text-gray-500">chunks</span>
+        </div>
+
+        <!-- Image Search Settings Toggle -->
+        <button
+          @click="showImageSettings = !showImageSettings"
+          class="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg bg-white hover:bg-gray-50 text-sm font-medium text-gray-700"
+        >
+          🖼️ Image Search
+          <span class="text-xs text-gray-500">{{ showImageSettings ? '▲' : '▼' }}</span>
+        </button>
           <button
             @click="showDebug = !showDebug"
             class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm"
@@ -43,6 +53,39 @@
           >
             🗑️ Clear History
           </button>
+        </div>
+      </div>
+
+      <!-- Image Search Settings Panel -->
+      <div v-if="showImageSettings" class="bg-blue-50 border border-blue-200 rounded-lg p-4 mt-3">
+        <div class="flex items-center gap-6">
+          <div class="flex items-center gap-3">
+            <label class="text-sm font-medium text-gray-700">Max Images:</label>
+            <input
+              v-model.number="imageSearchSettings.maxResults"
+              type="number"
+              min="1"
+              max="10"
+              class="w-16 px-2 py-1 border border-gray-300 rounded text-sm"
+            />
+          </div>
+
+          <div class="flex items-center gap-3">
+            <label class="text-sm font-medium text-gray-700">Min Confidence:</label>
+            <input
+              v-model.number="imageSearchSettings.minConfidence"
+              type="number"
+              min="0"
+              max="1"
+              step="0.05"
+              class="w-20 px-2 py-1 border border-gray-300 rounded text-sm"
+            />
+            <span class="text-xs text-gray-600">{{ Math.round(imageSearchSettings.minConfidence * 100) }}%</span>
+          </div>
+
+          <div class="text-xs text-gray-600 ml-auto">
+            💡 Filters out low-confidence image matches
+          </div>
         </div>
       </div>
     </div>
@@ -77,7 +120,7 @@
           >
             <div class="whitespace-pre-wrap">{{ message.content }}</div>
             
-            <!-- Images Display -->
+            <!-- Images Display (Found Images) -->
             <div v-if="message.images && message.images.length > 0" class="mt-4 space-y-3">
               <div
                 v-for="(image, imgIdx) in message.images"
@@ -93,6 +136,24 @@
                 />
                 <div class="text-xs text-gray-500 mt-2">
                   Relevance: {{ Math.round(image.relevance_score * 100) }}%
+                </div>
+              </div>
+            </div>
+            
+            <!-- Generated Image Display -->
+            <div v-if="message.generated_image" class="mt-4">
+              <div class="border border-purple-300 rounded-lg p-3 bg-purple-50">
+                <div class="font-semibold text-sm mb-2 text-purple-700">
+                  {{ message.generated_image.is_edit ? '✨ Edited Image' : '🎨 Generated Image' }}
+                </div>
+                <img
+                  :src="getGeneratedImageUrl(message.generated_image.filename)"
+                  :alt="message.generated_image.prompt"
+                  class="max-w-full h-auto rounded cursor-pointer hover:opacity-90 border-2 border-purple-200"
+                  @click="openGeneratedImageModal(message.generated_image)"
+                />
+                <div class="text-xs text-purple-600 mt-2 italic">
+                  "{{ message.generated_image.prompt }}"
                 </div>
               </div>
             </div>
@@ -198,11 +259,13 @@
           ×
         </button>
         <img
-          :src="getImageUrl(selectedImage)"
+          :src="selectedImage.isGenerated ? getGeneratedImageUrl(selectedImage.filename) : getImageUrl(selectedImage)"
           :alt="selectedImage.filename"
           class="max-w-full max-h-[90vh] object-contain"
         />
-        <div class="text-white text-center mt-4">{{ selectedImage.filename }}</div>
+        <div class="text-white text-center mt-4">
+          {{ selectedImage.isGenerated ? selectedImage.prompt : selectedImage.filename }}
+        </div>
       </div>
     </div>
   </div>
@@ -224,6 +287,13 @@ const showDebug = ref(false)
 const messagesContainer = ref(null)
 const ragCount = ref(5)
 const selectedImage = ref(null)
+
+// Image search settings
+const showImageSettings = ref(false)
+const imageSearchSettings = ref({
+  maxResults: 3,
+  minConfidence: 0.6  // 60% minimum confidence
+})
 
 const loadBot = async () => {
   try {
@@ -270,15 +340,21 @@ const sendMessage = async () => {
   loading.value = true
 
   try {
-    // Send message with current RAG count
-    const response = await chatWithBot(botId, userMessage, ragCount.value)
+    // Send message with current RAG count and image search settings
+    const response = await chatWithBot(
+      botId, 
+      userMessage, 
+      ragCount.value,
+      imageSearchSettings.value
+    )
     
-    // Add bot response
+    // Add bot response (filtering already done on backend)
     messages.value.push({
       role: 'assistant',
       content: response.data.response,
       intent: response.data.intent,
       images: response.data.images || [],
+      generated_image: response.data.generated_image || null,
       debug: response.data.debug
     })
 
@@ -301,8 +377,21 @@ const getImageUrl = (image) => {
   return getFileImage(bot.value.dataset_id, image.file_id)
 }
 
+const getGeneratedImageUrl = (filename) => {
+  return `http://localhost:5000/api/generated-images/${filename}`
+}
+
 const openImageModal = (image) => {
   selectedImage.value = image
+}
+
+const openGeneratedImageModal = (generatedImage) => {
+  // Create a fake image object for the modal
+  selectedImage.value = {
+    filename: generatedImage.filename,
+    isGenerated: true,
+    prompt: generatedImage.prompt
+  }
 }
 
 const clearHistory = () => {

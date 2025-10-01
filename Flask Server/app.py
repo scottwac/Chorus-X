@@ -1,14 +1,14 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
+from datetime import datetime, UTC
 from database import get_db, init_db, Dataset, ChorusModel, Bot, ChatHistory, UploadedFile
 from vector_store import VectorStore
 from file_processor import FileProcessor
 from chorus_service import ChorusService
 from werkzeug.utils import secure_filename
 import uuid
-from datetime import datetime
 import shutil
 
 load_dotenv()
@@ -80,7 +80,7 @@ def create_dataset():
             'name': dataset.name,
             'description': dataset.description,
             'collection_name': collection_name,
-            'created_at': dataset.created_at.isoformat()
+            'created_at': dataset.created_at.isoformat() if dataset.created_at else datetime.now(UTC).isoformat()
         }), 201
     except Exception as e:
         db.rollback()
@@ -472,6 +472,7 @@ def chat_with_bot(bot_id):
     data = request.json
     user_message = data.get('message', '')
     rag_count = data.get('rag_count')  # Optional override for RAG results count
+    image_settings = data.get('image_settings', {})  # Image search settings from frontend
     
     db = get_db()
     bot = db.query(Bot).filter_by(id=bot_id).first()
@@ -521,6 +522,10 @@ def chat_with_bot(bot_id):
         n_results = rag_count if rag_count is not None else (bot.rag_results_count or 5)
         relevant_docs = vector_store.query_collection(dataset.collection_name, user_message, n_results=n_results * 2)
         
+        # Get image search settings from frontend
+        max_images = image_settings.get('maxResults', 3)
+        min_confidence = image_settings.get('minConfidence', 0.6)
+        
         # Filter for image-related documents
         image_results = []
         seen_filenames = set()
@@ -529,39 +534,47 @@ def chat_with_bot(bot_id):
             metadata = doc.get('metadata', {})
             image_type = metadata.get('image_type')
             filename = metadata.get('filename', '')
+            relevance_score = 1 - doc.get('distance', 0)
             
-            # Check if this is an image document
+            # Check if this is an image document and meets confidence threshold
             if image_type in ['ocr', 'description'] and filename and filename not in seen_filenames:
-                seen_filenames.add(filename)
-                
-                # Get the actual file from database
-                uploaded_file = db.query(UploadedFile).filter_by(
-                    dataset_id=dataset.id,
-                    original_filename=filename
-                ).first()
-                
-                if uploaded_file and uploaded_file.file_type in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:
-                    image_results.append({
-                        'filename': filename,
-                        'file_id': uploaded_file.id,
-                        'file_path': uploaded_file.file_path,
-                        'description': doc.get('text', ''),
-                        'relevance_score': 1 - doc.get('distance', 0),
-                        'file_size': uploaded_file.file_size
-                    })
+                # Apply confidence filter
+                if relevance_score >= min_confidence:
+                    seen_filenames.add(filename)
+                    
+                    # Get the actual file from database
+                    uploaded_file = db.query(UploadedFile).filter_by(
+                        dataset_id=dataset.id,
+                        original_filename=filename
+                    ).first()
+                    
+                    if uploaded_file and uploaded_file.file_type in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:
+                        image_results.append({
+                            'filename': filename,
+                            'file_id': uploaded_file.id,
+                            'file_path': uploaded_file.file_path,
+                            'description': doc.get('text', ''),
+                            'relevance_score': relevance_score,
+                            'file_size': uploaded_file.file_size
+                        })
         
-        # Limit to top results
-        image_results = image_results[:min(5, n_results)]
+        # Limit to max results from settings
+        image_results = image_results[:max_images]
         
         if image_results:
-            response_text = f"🖼️ I found {len(image_results)} relevant image(s) in the dataset:"
+            confidence_text = f" (min {int(min_confidence * 100)}% confidence)" if min_confidence > 0 else ""
+            response_text = f"🖼️ I found {len(image_results)} relevant image(s) in the dataset{confidence_text}:"
             for idx, img in enumerate(image_results, 1):
                 response_text += f"\n\n{idx}. **{img['filename']}**"
+                response_text += f" - {int(img['relevance_score'] * 100)}% match"
                 # Add a snippet of the description
                 desc_snippet = img['description'][:150] + "..." if len(img['description']) > 150 else img['description']
                 response_text += f"\n   {desc_snippet}"
         else:
-            response_text = "🖼️ I couldn't find any relevant images in the dataset for your query. Try being more specific or check if images have been uploaded."
+            if min_confidence > 0:
+                response_text = f"🖼️ I couldn't find any images matching your query with at least {int(min_confidence * 100)}% confidence. Try lowering the minimum confidence threshold or being more specific."
+            else:
+                response_text = "🖼️ I couldn't find any relevant images in the dataset for your query. Try being more specific or check if images have been uploaded."
         
         chat_entry = ChatHistory(
             bot_id=bot_id,
@@ -584,25 +597,115 @@ def chat_with_bot(bot_id):
         })
     
     elif intent == 'generate_image':
-        # Image generation functionality (to be implemented)
-        response_text = "🎨 Image generation functionality is coming soon! I detected you want to create a new image."
-        
-        chat_entry = ChatHistory(
-            bot_id=bot_id,
-            user_message=user_message,
-            bot_response=response_text
-        )
-        db.add(chat_entry)
-        db.commit()
-        
-        return jsonify({
-            'response': response_text,
-            'intent': intent,
-            'debug': {
-                'intent_detected': intent,
-                'status': 'not_implemented'
-            }
-        })
+        # Image generation functionality
+        try:
+            reference_image_path = None
+            reference_filename = None
+            
+            # Check if the user is referencing a specific image file from their dataset
+            if dataset:
+                # Extract potential filenames from the user message
+                # Look for common image extensions
+                import re
+                filename_pattern = r'([A-Za-z0-9_\-\.]+\.(png|jpg|jpeg|gif|bmp|webp))'
+                matches = re.findall(filename_pattern, user_message, re.IGNORECASE)
+                
+                if matches:
+                    # User mentioned a filename - try to find it in the dataset
+                    mentioned_filename = matches[0][0]
+                    
+                    uploaded_file = db.query(UploadedFile).filter_by(
+                        dataset_id=dataset.id,
+                        original_filename=mentioned_filename
+                    ).first()
+                    
+                    if uploaded_file and uploaded_file.file_type in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:
+                        reference_image_path = uploaded_file.file_path
+                        reference_filename = uploaded_file.original_filename
+                        print(f"Found reference image: {reference_filename} at {reference_image_path}")
+                    else:
+                        print(f"Mentioned file '{mentioned_filename}' not found in dataset or not an image")
+            
+            # Get image generation settings
+            quality = image_settings.get('quality', 'high')
+            size = image_settings.get('size', '1024x1024')
+            
+            # Generate the image
+            print(f"Generating image for prompt: {user_message}")
+            image_result = llm_service_instance.generate_image(
+                prompt=user_message,
+                reference_image_path=reference_image_path,
+                quality=quality,
+                size=size
+            )
+            
+            # Save the generated image
+            import base64
+            import uuid
+            
+            generated_folder = os.path.join(app.config['UPLOAD_FOLDER'], 'generated')
+            os.makedirs(generated_folder, exist_ok=True)
+            
+            image_filename = f"generated_{uuid.uuid4().hex}.png"
+            image_path = os.path.join(generated_folder, image_filename)
+            
+            # Decode and save
+            image_bytes = base64.b64decode(image_result['image_base64'])
+            with open(image_path, 'wb') as f:
+                f.write(image_bytes)
+            
+            # Create response text
+            if reference_filename:
+                response_text = f"🎨 I've edited the image based on your request!\n\n**Original:** {reference_filename}\n**Edit:** {user_message}"
+            else:
+                response_text = f"🎨 I've generated an image for you!\n\n**Prompt:** {image_result['revised_prompt']}"
+            
+            # Save to chat history
+            chat_entry = ChatHistory(
+                bot_id=bot_id,
+                user_message=user_message,
+                bot_response=response_text
+            )
+            db.add(chat_entry)
+            db.commit()
+            
+            return jsonify({
+                'response': response_text,
+                'intent': intent,
+                'generated_image': {
+                    'filename': image_filename,
+                    'path': image_path,
+                    'prompt': image_result['revised_prompt'],
+                    'is_edit': reference_image_path is not None
+                },
+                'debug': {
+                    'intent_detected': intent,
+                    'quality': quality,
+                    'size': size,
+                    'revised_prompt': image_result['revised_prompt']
+                }
+            })
+            
+        except Exception as e:
+            print(f"Error in image generation: {e}")
+            error_text = f"🎨 Sorry, I encountered an error while generating the image: {str(e)}"
+            
+            chat_entry = ChatHistory(
+                bot_id=bot_id,
+                user_message=user_message,
+                bot_response=error_text
+            )
+            db.add(chat_entry)
+            db.commit()
+            
+            return jsonify({
+                'response': error_text,
+                'intent': intent,
+                'debug': {
+                    'intent_detected': intent,
+                    'error': str(e)
+                }
+            }), 500
     
     # Intent is 'text' - proceed with normal Chorus flow
     # Query vector store for relevant context
@@ -669,8 +772,17 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'service': 'Chorus Backend',
-        'timestamp': datetime.utcnow().isoformat()
+        'timestamp': datetime.now(UTC).isoformat()
     })
+
+@app.route('/api/generated-images/<path:filename>', methods=['GET'])
+def serve_generated_image(filename):
+    """Serve generated images"""
+    try:
+        generated_folder = os.path.join(app.config['UPLOAD_FOLDER'], 'generated')
+        return send_file(os.path.join(generated_folder, filename), mimetype='image/png')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 404
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

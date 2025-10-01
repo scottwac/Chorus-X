@@ -34,10 +34,13 @@ export const deleteChorusModel = (modelId) => api.delete(`/chorus-models/${model
 export const getBots = () => api.get('/bots')
 export const createBot = (data) => api.post('/bots', data)
 export const deleteBot = (botId) => api.delete(`/bots/${botId}`)
-export const chatWithBot = (botId, message, ragCount = null) => {
+export const chatWithBot = (botId, message, ragCount = null, imageSettings = null) => {
   const payload = { message }
   if (ragCount !== null) {
     payload.rag_count = ragCount
+  }
+  if (imageSettings !== null) {
+    payload.image_settings = imageSettings
   }
   return api.post(`/bots/${botId}/chat`, payload)
 }

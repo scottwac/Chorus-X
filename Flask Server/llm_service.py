@@ -9,6 +9,8 @@ class LLMService:
         self.openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
         self.anthropic_client = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
         self.groq_client = Groq(api_key=os.getenv('GROQ_API_KEY'))
+        # Separate client for image generation
+        self.image_gen_client = OpenAI(api_key=os.getenv('OPENAI_IMAGE_GEN_KEY'))
     
     def classify_user_intent(self, user_message: str) -> str:
         """
@@ -145,4 +147,56 @@ Respond with ONLY the classification word: text, find_image, or generate_image""
         except Exception as e:
             print(f"Error generating image description: {e}")
             return f"Image description unavailable: {str(e)}"
+    
+    def generate_image(self, prompt: str, reference_image_path: str = None, quality: str = "high", size: str = "1024x1024") -> dict:
+        """
+        Generate an image using GPT Image (gpt-image-1) via Image API
+        
+        Args:
+            prompt: Text description of the image to generate
+            reference_image_path: Optional path to reference image for editing
+            quality: Image quality (low, medium, high, auto)
+            size: Image size (1024x1024, 1536x1024, 1024x1536, auto)
+        
+        Returns:
+            dict with 'image_base64', 'revised_prompt', 'format'
+        """
+        try:
+            import base64
+            
+            # Build the input for the API
+            if reference_image_path:
+                # Editing mode: use gpt-image-1 edit endpoint with reference image
+                with open(reference_image_path, 'rb') as f:
+                    response = self.image_gen_client.images.edit(
+                        model="gpt-image-1",
+                        image=[f],  # GPT Image accepts a list of images
+                        prompt=prompt,
+                        quality=quality,
+                        size=size,
+                        input_fidelity="high"  # Preserve details from reference
+                    )
+            else:
+                # Generation mode: use gpt-image-1 for best quality
+                response = self.image_gen_client.images.generate(
+                    model="gpt-image-1",
+                    prompt=prompt,
+                    size=size,
+                    quality=quality
+                )
+            
+            # Extract the generated image
+            if response.data and len(response.data) > 0:
+                image_data = response.data[0]
+                return {
+                    'image_base64': image_data.b64_json,
+                    'revised_prompt': getattr(image_data, 'revised_prompt', prompt),
+                    'format': 'png'
+                }
+            else:
+                raise Exception("No image was generated")
+                
+        except Exception as e:
+            print(f"Error generating image: {e}")
+            raise e
 
