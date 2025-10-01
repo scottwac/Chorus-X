@@ -1,23 +1,129 @@
 <template>
-  <div class="max-w-6xl mx-auto">
-    <!-- Header -->
-    <div class="bg-white rounded-xl shadow-md p-6 mb-6">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-4">
-          <button
-            @click="$router.push('/bots')"
-            class="text-2xl hover:bg-gray-100 p-2 rounded-lg"
-          >
-            ← 
-          </button>
-          <div>
-            <div class="flex items-center gap-2">
-              <span class="text-2xl">🤖</span>
-              <h1 class="text-2xl font-bold text-gray-800">{{ bot?.name || 'Loading...' }}</h1>
+  <div class="flex gap-6 max-w-[1800px] mx-auto">
+    <!-- Debug Sidebar (Left) -->
+    <div 
+      v-if="showDebugSidebar" 
+      class="w-96 flex-shrink-0 bg-white rounded-xl shadow-md p-6 max-h-[calc(100vh-100px)] overflow-y-auto sticky top-6"
+    >
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-bold text-gray-800">🔍 Chorus Debug</h2>
+        <button
+          @click="showDebugSidebar = false"
+          class="text-gray-500 hover:text-gray-700"
+        >
+          ✕
+        </button>
+      </div>
+
+      <div v-if="lastDebugInfo">
+        <!-- Intent -->
+        <div class="mb-4 p-3 bg-blue-50 rounded-lg">
+          <div class="text-xs font-semibold text-blue-700 mb-1">Intent</div>
+          <div class="text-sm text-blue-900">{{ lastDebugInfo.intent_detected || 'N/A' }}</div>
+        </div>
+
+        <!-- RAG Count -->
+        <div v-if="lastDebugInfo.rag_count_used" class="mb-4 p-3 bg-green-50 rounded-lg">
+          <div class="text-xs font-semibold text-green-700 mb-1">RAG Chunks Used</div>
+          <div class="text-sm text-green-900">{{ lastDebugInfo.rag_count_used }}</div>
+        </div>
+
+        <!-- All Responses -->
+        <div v-if="lastDebugInfo.all_responses && lastDebugInfo.all_responses.length > 0" class="mb-4">
+          <div class="text-sm font-semibold text-gray-700 mb-2">
+            📝 All Responses ({{ lastDebugInfo.all_responses.length }})
+          </div>
+          <div class="space-y-3">
+            <div
+              v-for="(resp, idx) in lastDebugInfo.all_responses"
+              :key="idx"
+              class="p-3 rounded-lg border"
+              :class="idx === lastDebugInfo.winner_index ? 'bg-yellow-50 border-yellow-300' : 'bg-gray-50 border-gray-200'"
+            >
+              <div class="flex items-center justify-between mb-2">
+                <div class="text-xs font-semibold text-gray-700">
+                  Response {{ idx + 1 }}
+                  <span v-if="idx === lastDebugInfo.winner_index" class="ml-2 text-yellow-600">👑 Winner</span>
+                </div>
+                <div class="text-xs text-gray-500">
+                  {{ resp.provider }} / {{ resp.model }}
+                </div>
+              </div>
+              <div class="text-xs text-gray-600 line-clamp-4">{{ resp.response }}</div>
             </div>
-            <p class="text-sm text-gray-600 mt-1">{{ bot?.instructions }}</p>
           </div>
         </div>
+
+        <!-- Votes -->
+        <div v-if="lastDebugInfo.votes && lastDebugInfo.votes.length > 0" class="mb-4">
+          <div class="text-sm font-semibold text-gray-700 mb-2">🗳️ Votes</div>
+          <div class="space-y-2">
+            <div
+              v-for="(vote, idx) in lastDebugInfo.votes"
+              :key="idx"
+              class="p-2 bg-purple-50 rounded text-xs"
+            >
+              <div class="font-semibold text-purple-700">{{ vote.evaluator }}</div>
+              <div class="text-purple-900">Voted for Response {{ vote.vote }}</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Vote Counts -->
+        <div v-if="lastDebugInfo.vote_counts" class="mb-4">
+          <div class="text-sm font-semibold text-gray-700 mb-2">📊 Vote Summary</div>
+          <div class="space-y-1">
+            <div
+              v-for="(count, responseIdx) in lastDebugInfo.vote_counts"
+              :key="responseIdx"
+              class="flex items-center justify-between p-2 bg-gray-50 rounded text-xs"
+            >
+              <span class="font-medium">Response {{ responseIdx }}</span>
+              <div class="flex items-center gap-2">
+                <div class="w-24 bg-gray-200 rounded-full h-2">
+                  <div
+                    class="bg-chorus-green-500 h-2 rounded-full"
+                    :style="{ width: `${(count / Math.max(...Object.values(lastDebugInfo.vote_counts))) * 100}%` }"
+                  ></div>
+                </div>
+                <span class="font-semibold">{{ count }} vote{{ count !== 1 ? 's' : '' }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Image Search Debug -->
+        <div v-if="lastDebugInfo.images_found !== undefined" class="mb-4 p-3 bg-indigo-50 rounded-lg">
+          <div class="text-xs font-semibold text-indigo-700 mb-1">Images Found</div>
+          <div class="text-sm text-indigo-900">{{ lastDebugInfo.images_found }} / {{ lastDebugInfo.total_docs_searched }} searched</div>
+        </div>
+      </div>
+
+      <div v-else class="text-sm text-gray-500 text-center py-8">
+        Send a message to see debug info
+      </div>
+    </div>
+
+    <!-- Main Chat Area -->
+    <div class="flex-1 min-w-0">
+      <!-- Header -->
+      <div class="bg-white rounded-xl shadow-md p-6 mb-6">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-4">
+            <button
+              @click="$router.push('/bots')"
+              class="text-2xl hover:bg-gray-100 p-2 rounded-lg"
+            >
+              ← 
+            </button>
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="text-2xl">🤖</span>
+                <h1 class="text-2xl font-bold text-gray-800">{{ bot?.name || 'Loading...' }}</h1>
+              </div>
+              <p class="text-sm text-gray-600 mt-1">{{ bot?.instructions }}</p>
+            </div>
+          </div>
         
       <div class="flex gap-2 items-center flex-wrap">
         <!-- RAG Settings -->
@@ -42,10 +148,11 @@
           <span class="text-xs text-gray-500">{{ showImageSettings ? '▲' : '▼' }}</span>
         </button>
           <button
-            @click="showDebug = !showDebug"
-            class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm"
+            @click="showDebugSidebar = !showDebugSidebar"
+            class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium"
+            :class="showDebugSidebar ? 'bg-blue-50 text-blue-700 border-blue-300' : ''"
           >
-            {{ showDebug ? '🔍 Hide Debug' : '🔍 Show Debug' }}
+            {{ showDebugSidebar ? '🔍 Hide Debug Panel' : '🔍 Show Debug Panel' }}
           </button>
           <button
             @click="clearHistory"
@@ -55,6 +162,7 @@
           </button>
         </div>
       </div>
+    </div>
 
       <!-- Image Search Settings Panel -->
       <div v-if="showImageSettings" class="bg-blue-50 border border-blue-200 rounded-lg p-4 mt-3">
@@ -88,10 +196,9 @@
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- Chat Container -->
-    <div class="bg-white rounded-xl shadow-md flex flex-col h-[calc(100vh-300px)]">
+      <!-- Chat Container -->
+      <div class="bg-white rounded-xl shadow-md flex flex-col h-[calc(100vh-300px)]">
       <!-- Messages -->
       <div ref="messagesContainer" class="flex-1 overflow-y-auto p-6 space-y-4">
         <div v-if="messages.length === 0" class="text-center text-gray-500 mt-12">
@@ -158,11 +265,29 @@
               </div>
             </div>
             
+            <!-- Generated Chart Display -->
+            <div v-if="message.generated_chart" class="mt-4">
+              <div class="border border-blue-300 rounded-lg p-3 bg-blue-50">
+                <div class="font-semibold text-sm mb-2 text-blue-700">
+                  📊 {{ message.generated_chart.title }}
+                </div>
+                <img
+                  :src="getGeneratedChartUrl(message.generated_chart.filename)"
+                  :alt="message.generated_chart.title"
+                  class="max-w-full h-auto rounded cursor-pointer hover:opacity-90 border-2 border-blue-200 bg-white"
+                  @click="openGeneratedChartModal(message.generated_chart)"
+                />
+                <div class="text-xs text-blue-600 mt-2">
+                  Chart Type: {{ message.generated_chart.chart_type }}
+                </div>
+              </div>
+            </div>
+            
             <!-- Intent Badge -->
             <div v-if="message.intent && message.intent !== 'text'" class="mt-2">
               <span class="inline-block px-2 py-1 text-xs rounded-full" 
-                    :class="message.intent === 'find_image' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'">
-                {{ message.intent === 'find_image' ? '🖼️ Image Search' : '🎨 Image Generation' }}
+                    :class="getIntentBadgeClass(message.intent)">
+                {{ getIntentBadgeText(message.intent) }}
               </span>
             </div>
             
@@ -213,11 +338,25 @@
           <div class="flex-shrink-0 w-8 h-8 bg-chorus-green-100 rounded-full flex items-center justify-center">
             🤖
           </div>
-          <div class="bg-gray-100 rounded-2xl px-4 py-3">
+          <div class="bg-gray-100 rounded-2xl px-4 py-3 min-w-[200px]">
             <div class="flex gap-2 items-center">
               <div class="animate-bounce">●</div>
               <div class="animate-bounce animation-delay-200">●</div>
               <div class="animate-bounce animation-delay-400">●</div>
+              <span v-if="processingStatus" class="ml-3 text-sm text-gray-600 animate-fade-in">
+                {{ processingStatus }}
+              </span>
+            </div>
+            <!-- Processing Steps List -->
+            <div v-if="processingSteps.length > 0" class="mt-3 space-y-1">
+              <div 
+                v-for="(step, idx) in processingSteps" 
+                :key="idx"
+                class="text-xs text-gray-500 flex items-center gap-2 animate-fade-in"
+              >
+                <span class="text-green-500">✓</span>
+                {{ step }}
+              </div>
             </div>
           </div>
         </div>
@@ -242,6 +381,7 @@
             Send 📤
           </button>
         </div>
+        </div>
       </div>
     </div>
 
@@ -259,12 +399,12 @@
           ×
         </button>
         <img
-          :src="selectedImage.isGenerated ? getGeneratedImageUrl(selectedImage.filename) : getImageUrl(selectedImage)"
+          :src="selectedImage.isChart ? getGeneratedChartUrl(selectedImage.filename) : (selectedImage.isGenerated ? getGeneratedImageUrl(selectedImage.filename) : getImageUrl(selectedImage))"
           :alt="selectedImage.filename"
           class="max-w-full max-h-[90vh] object-contain"
         />
         <div class="text-white text-center mt-4">
-          {{ selectedImage.isGenerated ? selectedImage.prompt : selectedImage.filename }}
+          {{ selectedImage.isChart ? selectedImage.title : (selectedImage.isGenerated ? selectedImage.prompt : selectedImage.filename) }}
         </div>
       </div>
     </div>
@@ -284,9 +424,13 @@ const messages = ref([])
 const inputMessage = ref('')
 const loading = ref(false)
 const showDebug = ref(false)
+const showDebugSidebar = ref(false)
+const lastDebugInfo = ref(null)
 const messagesContainer = ref(null)
 const ragCount = ref(5)
 const selectedImage = ref(null)
+const processingStatus = ref('')
+const processingSteps = ref([])
 
 // Image search settings
 const showImageSettings = ref(false)
@@ -338,6 +482,8 @@ const sendMessage = async () => {
   scrollToBottom()
 
   loading.value = true
+  processingStatus.value = 'Processing your request...'
+  processingSteps.value = []
 
   try {
     // Send message with current RAG count and image search settings
@@ -348,6 +494,14 @@ const sendMessage = async () => {
       imageSearchSettings.value
     )
     
+    // Show all processing steps immediately (no animation delay since they come all at once)
+    if (response.data.processing_steps && response.data.processing_steps.length > 0) {
+      processingSteps.value = response.data.processing_steps
+    }
+    
+    // Clear processing status before showing response
+    processingStatus.value = ''
+    
     // Add bot response (filtering already done on backend)
     messages.value.push({
       role: 'assistant',
@@ -355,8 +509,14 @@ const sendMessage = async () => {
       intent: response.data.intent,
       images: response.data.images || [],
       generated_image: response.data.generated_image || null,
+      generated_chart: response.data.generated_chart || null,
       debug: response.data.debug
     })
+
+    // Update debug sidebar with latest debug info
+    if (response.data.debug) {
+      lastDebugInfo.value = response.data.debug
+    }
 
     await nextTick()
     scrollToBottom()
@@ -368,6 +528,8 @@ const sendMessage = async () => {
     })
   } finally {
     loading.value = false
+    processingStatus.value = ''
+    processingSteps.value = []
   }
 }
 
@@ -379,6 +541,10 @@ const getImageUrl = (image) => {
 
 const getGeneratedImageUrl = (filename) => {
   return `http://localhost:5000/api/generated-images/${filename}`
+}
+
+const getGeneratedChartUrl = (filename) => {
+  return `http://localhost:5000/api/generated-charts/${filename}`
 }
 
 const openImageModal = (image) => {
@@ -394,9 +560,47 @@ const openGeneratedImageModal = (generatedImage) => {
   }
 }
 
-const clearHistory = () => {
+const openGeneratedChartModal = (generatedChart) => {
+  // Create a fake image object for the modal
+  selectedImage.value = {
+    filename: generatedChart.filename,
+    isChart: true,
+    title: generatedChart.title
+  }
+}
+
+const getIntentBadgeClass = (intent) => {
+  const classes = {
+    'find_image': 'bg-blue-100 text-blue-700',
+    'generate_image': 'bg-purple-100 text-purple-700',
+    'generate_chart': 'bg-green-100 text-green-700'
+  }
+  return classes[intent] || 'bg-gray-100 text-gray-700'
+}
+
+const getIntentBadgeText = (intent) => {
+  const texts = {
+    'find_image': '🖼️ Image Search',
+    'generate_image': '🎨 Image Generation',
+    'generate_chart': '📊 Chart Generation'
+  }
+  return texts[intent] || intent
+}
+
+const clearHistory = async () => {
   if (confirm('Are you sure you want to clear the chat history?')) {
-    messages.value = []
+    try {
+      // Clear backend history
+      await fetch(`http://localhost:5000/api/bots/${botId}/history`, {
+        method: 'DELETE'
+      })
+      // Clear frontend state
+      messages.value = []
+    } catch (error) {
+      console.error('Failed to clear history:', error)
+      // Still clear frontend state even if backend fails
+      messages.value = []
+    }
   }
 }
 
@@ -419,6 +623,28 @@ onMounted(() => {
 
 .animation-delay-400 {
   animation-delay: 0.4s;
+}
+
+.line-clamp-4 {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 </style>
 

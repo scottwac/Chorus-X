@@ -15,7 +15,7 @@ class LLMService:
     def classify_user_intent(self, user_message: str) -> str:
         """
         Use GPT-5 to classify user intent
-        Returns: 'text', 'find_image', or 'generate_image'
+        Returns: 'text', 'find_image', 'generate_image', or 'generate_chart'
         """
         try:
             classification_prompt = f"""You are an intent classifier. Analyze the user's message and determine their intent.
@@ -23,24 +23,38 @@ class LLMService:
 User message: "{user_message}"
 
 Classify the intent as ONE of these:
-1. "text" - User wants a text-based answer or conversation
-2. "find_image" - User wants to find/retrieve an existing image from a dataset (e.g., "show me the chart", "find the diagram", "what images do we have")
-3. "generate_image" - User wants to create/generate a new image (e.g., "create an image of", "generate a picture", "draw me")
+1. "text" - User wants a text-based answer or conversation (e.g., "explain this", "tell me about", "what is")
+2. "find_image" - User wants to find/retrieve an existing image from a dataset (e.g., "show me the chart that was uploaded", "find the diagram in our files", "what images do we have")
+3. "generate_chart" - User wants to visualize data in a chart/graph (e.g., "show me a chart of", "plot the progression", "visualize the trend", "graph the data", "chart the sales")
+4. "generate_image" - User wants to create/generate a new artistic image (e.g., "create an image of", "generate a picture", "draw me", "make a visual of a sunset")
 
-Respond with ONLY the classification word: text, find_image, or generate_image"""
+IMPORTANT: If the user wants to visualize numerical data, trends, or create charts/graphs, choose "generate_chart". Only use "generate_image" for artistic/creative images.
+
+Respond with ONLY the classification word: text, find_image, generate_chart, or generate_image"""
 
             response = self.openai_client.chat.completions.create(
                 model="gpt-5-2025-08-07",
                 messages=[
-                    {"role": "system", "content": "You are a precise intent classifier. Respond with only one word: text, find_image, or generate_image."},
+                    {"role": "system", "content": "You are a precise intent classifier. Respond with only one word: text, find_image, generate_chart, or generate_image."},
                     {"role": "user", "content": classification_prompt}
                 ]
             )
             
             intent = response.choices[0].message.content.strip().lower()
             
+            # Additional validation for chart/visualization requests
+            chart_keywords = [
+                'chart', 'graph', 'plot', 'visualize', 'visualization', 'show me the progression',
+                'show me a chart', 'show me a graph', 'trend line', 'bar chart', 'line graph',
+                'pie chart', 'scatter plot', 'histogram'
+            ]
+            
+            # If the message contains chart keywords, force it to be 'generate_chart'
+            if any(keyword in user_message.lower() for keyword in chart_keywords):
+                return 'generate_chart'
+            
             # Validate response
-            if intent in ['text', 'find_image', 'generate_image']:
+            if intent in ['text', 'find_image', 'generate_image', 'generate_chart']:
                 return intent
             else:
                 # Default to text if unclear
@@ -168,16 +182,16 @@ Respond with ONLY the classification word: text, find_image, or generate_image""
             if reference_image_path:
                 # Editing mode: use gpt-image-1 edit endpoint with reference image
                 with open(reference_image_path, 'rb') as f:
+                    # Image API edit endpoint ONLY supports: model, image, prompt
+                    # For single image: pass the file object directly (not in a list)
                     response = self.image_gen_client.images.edit(
                         model="gpt-image-1",
-                        image=[f],  # GPT Image accepts a list of images
-                        prompt=prompt,
-                        quality=quality,
-                        size=size,
-                        input_fidelity="high"  # Preserve details from reference
+                        image=f,  # Single file object for single image edit
+                        prompt=prompt
                     )
             else:
                 # Generation mode: use gpt-image-1 for best quality
+                # Generate endpoint supports: model, prompt, size, quality
                 response = self.image_gen_client.images.generate(
                     model="gpt-image-1",
                     prompt=prompt,
