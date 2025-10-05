@@ -9,8 +9,18 @@ pause
 
 cd "Flask Server"
 
+echo Activating virtual environment...
+call venv\Scripts\activate.bat
+echo.
+
 echo Deleting old database...
-if exist chorus.db del chorus.db
+rem Handle if a directory named chorus.db exists (conflicts with SQLite file)
+if exist chorus.db\NUL (
+    echo Found directory named chorus.db - removing directory...
+    rmdir /s /q chorus.db
+) else (
+    if exist chorus.db del /q /f chorus.db
+)
 echo.
 
 echo Deleting old vector store...
